@@ -1,7 +1,6 @@
-// app/page.jsx
 "use client";
 
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Binance from 'binance-api-node';
 import { 
   Line, Bar 
@@ -18,8 +17,18 @@ import {
   Legend,
   Filler
 } from 'chart.js';
-import { TechnicalAnalysis } from 'react-ts-tradingview-widgets';
-import { FaPlay, FaStop, FaSync, FaChartLine, FaDollarSign } from 'react-icons/fa';
+import dynamic from 'next/dynamic';
+import { 
+  FaPlay, FaStop, FaChartLine, FaDollarSign, 
+  FaCog, FaSignal, FaHistory, FaExchangeAlt,
+  FaInfoCircle, FaRedo
+} from 'react-icons/fa';
+
+// Lazy load untuk Technical Analysis
+const TechnicalAnalysis = dynamic(
+  () => import('react-ts-tradingview-widgets').then(mod => mod.TechnicalAnalysis),
+  { ssr: false }
+);
 
 ChartJS.register(
   CategoryScale,
@@ -49,8 +58,7 @@ const ProfessionalTradingBot = () => {
   // State management
   const [symbol, setSymbol] = useState('BTCUSDT');
   const [timeframe, setTimeframe] = useState('5m');
-  const [balance, setBalance] = useState({ USDT: 0, BTC: 0 });
-  const [positions, setPositions] = useState([]);
+  const [balance, setBalance] = useState({ USDT: 10000, BTC: 0 });
   const [trades, setTrades] = useState([]);
   const [signals, setSignals] = useState([]);
   const [botStatus, setBotStatus] = useState('stopped');
@@ -70,110 +78,139 @@ const ProfessionalTradingBot = () => {
   const [h1Candles, setH1Candles] = useState([]);
   const [d1Candles, setD1Candles] = useState([]);
   const [indicators, setIndicators] = useState({});
-  const [config, setConfig] = useState({
-    apiKey: '',
-    apiSecret: '',
-    isTestnet: true,
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [botLogs, setBotLogs] = useState([]);
+  
+  // Ambil config dari environment variables
+  const [config] = useState({
+    apiKey: process.env.NEXT_PUBLIC_BINANCE_API_KEY || '',
+    apiSecret: process.env.NEXT_PUBLIC_BINANCE_API_SECRET || '',
+    isTestnet: process.env.NEXT_PUBLIC_BINANCE_TESTNET === 'true',
   });
+  
   const [performanceStats, setPerformanceStats] = useState(null);
   
   const clientRef = useRef(null);
   const wsRef = useRef(null);
   const botIntervalRef = useRef(null);
 
+  // Fungsi untuk menambahkan log
+  const addLog = (message) => {
+    setBotLogs(prev => [
+      { timestamp: new Date(), message },
+      ...prev.slice(0, 19) // Simpan hanya 20 log terbaru
+    ]);
+  };
+
   // Hitung semua indikator
   const calculateAllIndicators = (candles) => {
-    if (candles.length < 100) return {};
+    if (!candles || candles.length < 30) {
+      addLog(`Tidak cukup data untuk kalkulasi indikator (hanya ${candles?.length || 0} candle)`);
+      return {};
+    }
     
-    const closes = candles.map(c => parseFloat(c.close));
-    const highs = candles.map(c => parseFloat(c.high));
-    const lows = candles.map(c => parseFloat(c.low));
-    const volumes = candles.map(c => parseFloat(c.volume));
-    
-    // EMA
-    const emaShort = EMA.calculate({ period: settings.emaShort, values: closes });
-    const emaLong = EMA.calculate({ period: settings.emaLong, values: closes });
-    
-    // RSI
-    const rsi = RSI.calculate({ values: closes, period: settings.rsiPeriod });
-    
-    // Stochastic
-    const stochastic = Stochastic.calculate({
-      high: highs,
-      low: lows,
-      close: closes,
-      period: settings.stochasticPeriod,
-      signalPeriod: 3
-    });
-    
-    // MACD
-    const macd = MACD.calculate({
-      values: closes,
-      fastPeriod: settings.macdFast,
-      slowPeriod: settings.macdSlow,
-      signalPeriod: settings.macdSignal,
-      SimpleMAOscillator: false,
-      SimpleMASignal: false
-    });
-    
-    // ATR
-    const atr = ATR.calculate({
-      high: highs,
-      low: lows,
-      close: closes,
-      period: settings.atrPeriod
-    });
-    
-    // Volume SMA
-    const volumeSMA = SMA.calculate({ period: 20, values: volumes });
-    
-    // Fibonacci Levels (dari 100 candle terakhir)
-    const recentHigh = Math.max(...highs.slice(-100));
-    const recentLow = Math.min(...lows.slice(-100));
-    const fibLevels = {
-      level0: recentHigh,
-      level23: recentHigh - (recentHigh - recentLow) * 0.236,
-      level38: recentHigh - (recentHigh - recentLow) * 0.382,
-      level50: recentHigh - (recentHigh - recentLow) * 0.5,
-      level61: recentHigh - (recentHigh - recentLow) * 0.618,
-      level100: recentLow
-    };
-    
-    return {
-      emaShort: emaShort[emaShort.length - 1],
-      emaLong: emaLong[emaLong.length - 1],
-      rsi: rsi[rsi.length - 1],
-      stochasticK: stochastic[stochastic.length - 1].k,
-      stochasticD: stochastic[stochastic.length - 1].d,
-      macdHistogram: macd[macd.length - 1].histogram,
-      macdSignal: macd[macd.length - 1].signal,
-      macd: macd[macd.length - 1].macd,
-      atr: atr[atr.length - 1],
-      volumeSMA: volumeSMA[volumeSMA.length - 1],
-      fibLevels,
-      recentHigh,
-      recentLow
-    };
+    try {
+      const closes = candles.map(c => parseFloat(c.close));
+      const highs = candles.map(c => parseFloat(c.high));
+      const lows = candles.map(c => parseFloat(c.low));
+      const volumes = candles.map(c => parseFloat(c.volume));
+      
+      // EMA
+      const emaShort = EMA.calculate({ period: settings.emaShort, values: closes });
+      const emaLong = EMA.calculate({ period: settings.emaLong, values: closes });
+      
+      // RSI
+      const rsi = RSI.calculate({ values: closes, period: settings.rsiPeriod });
+      
+      // Stochastic
+      const stochastic = Stochastic.calculate({
+        high: highs,
+        low: lows,
+        close: closes,
+        period: settings.stochasticPeriod,
+        signalPeriod: 3
+      });
+      
+      // MACD
+      const macd = MACD.calculate({
+        values: closes,
+        fastPeriod: settings.macdFast,
+        slowPeriod: settings.macdSlow,
+        signalPeriod: settings.macdSignal,
+        SimpleMAOscillator: false,
+        SimpleMASignal: false
+      });
+      
+      // ATR
+      const atr = ATR.calculate({
+        high: highs,
+        low: lows,
+        close: closes,
+        period: settings.atrPeriod
+      });
+      
+      // Volume SMA
+      const volumeSMA = SMA.calculate({ period: 20, values: volumes });
+      
+      // Fibonacci Levels (dari 100 candle terakhir)
+      const recentHigh = Math.max(...highs.slice(-100));
+      const recentLow = Math.min(...lows.slice(-100));
+      const fibLevels = {
+        level0: recentHigh,
+        level23: recentHigh - (recentHigh - recentLow) * 0.236,
+        level38: recentHigh - (recentHigh - recentLow) * 0.382,
+        level50: recentHigh - (recentHigh - recentLow) * 0.5,
+        level61: recentHigh - (recentHigh - recentLow) * 0.618,
+        level100: recentLow
+      };
+      
+      return {
+        emaShort: emaShort[emaShort.length - 1],
+        emaLong: emaLong[emaLong.length - 1],
+        rsi: rsi[rsi.length - 1],
+        stochasticK: stochastic[stochastic.length - 1]?.k || 0,
+        stochasticD: stochastic[stochastic.length - 1]?.d || 0,
+        macdHistogram: macd[macd.length - 1]?.histogram || 0,
+        macdSignal: macd[macd.length - 1]?.signal || 0,
+        macd: macd[macd.length - 1]?.macd || 0,
+        atr: atr[atr.length - 1] || 0,
+        volumeSMA: volumeSMA[volumeSMA.length - 1] || 0,
+        fibLevels,
+        recentHigh,
+        recentLow
+      };
+    } catch (e) {
+      addLog(`Error kalkulasi indikator: ${e.message}`);
+      return {};
+    }
   };
 
   // Fetch data candle untuk multi timeframe
   const fetchMultiTimeframeCandles = async () => {
-    if (!clientRef.current) return;
+    if (!clientRef.current) {
+      addLog("Client Binance belum diinisialisasi");
+      return;
+    }
     
     try {
-      // Timeframe utama (M5)
+      setLoading(true);
+      addLog(`Memulai fetch candle untuk ${symbol} (${timeframe})`);
+      
+      // Timeframe utama
       const mainCandles = await clientRef.current.candles({
         symbol,
         interval: timeframe,
         limit: 100
       });
       setCandles(mainCandles);
+      addLog(`Berhasil fetch ${mainCandles.length} candle utama`);
       
       // Konfirmasi tren (H1)
       const h1Candles = await clientRef.current.candles({
         symbol,
         interval: '1h',
-        limit: 100
+        limit: 50
       });
       setH1Candles(h1Candles);
       
@@ -181,7 +218,7 @@ const ProfessionalTradingBot = () => {
       const d1Candles = await clientRef.current.candles({
         symbol,
         interval: '1d',
-        limit: 100
+        limit: 30
       });
       setD1Candles(d1Candles);
       
@@ -196,6 +233,8 @@ const ProfessionalTradingBot = () => {
         d1: d1Indicators
       });
       
+      addLog("Indikator berhasil dihitung");
+      
       return {
         mainCandles,
         h1Candles,
@@ -205,109 +244,131 @@ const ProfessionalTradingBot = () => {
         d1Indicators
       };
     } catch (error) {
-      console.error('Error fetching candles:', error);
+      const errMsg = `Error fetching candles: ${error.message}`;
+      console.error(errMsg);
+      setError(errMsg);
+      addLog(errMsg);
+    } finally {
+      setLoading(false);
     }
   };
 
   // Generate trading signal dengan multi konfirmasi
   const generateSignal = (candlesData, indicatorsData) => {
-    if (!candlesData || !indicatorsData) return null;
+    if (!candlesData || !indicatorsData) {
+      addLog("Data candle/indikator tidak tersedia untuk generate sinyal");
+      return null;
+    }
     
     const { mainCandles, h1Indicators, d1Indicators } = candlesData;
     const { main: mainInd, h1: h1Ind, d1: d1Ind } = indicatorsData;
     
-    if (!mainInd || !h1Ind || !d1Ind) return null;
+    if (!mainInd || !h1Ind || !d1Ind) {
+      addLog("Indikator utama tidak lengkap");
+      return null;
+    }
     
-    const lastCandle = mainCandles[mainCandles.length - 1];
-    const lastClose = parseFloat(lastCandle.close);
-    const lastVolume = parseFloat(lastCandle.volume);
-    
-    // 1. Konfirmasi arah tren besar (H1 dan D1)
-    const isBullishTrend = 
-      h1Ind.emaShort > h1Ind.emaLong && 
-      d1Ind.emaShort > d1Ind.emaLong;
+    try {
+      const lastCandle = mainCandles[mainCandles.length - 1];
+      const lastClose = parseFloat(lastCandle.close);
+      const lastVolume = parseFloat(lastCandle.volume);
       
-    const isBearishTrend = 
-      h1Ind.emaShort < h1Ind.emaLong && 
-      d1Ind.emaShort < d1Ind.emaLong;
-    
-    // 2. Kondisi entry
-    const buyConditions = {
-      rsi: mainInd.rsi < 30,
-      stochastic: mainInd.stochasticK < 20 && mainInd.stochasticK > mainInd.stochasticD,
-      ema: mainInd.emaShort > mainInd.emaLong,
-      macd: mainInd.macdHistogram > 0 && mainInd.macdHistogram > mainInd.macdSignal,
-      volume: lastVolume > mainInd.volumeSMA * 1.5,
-      fibonacci: lastClose <= mainInd.fibLevels.level61
-    };
-    
-    const sellConditions = {
-      rsi: mainInd.rsi > 70,
-      stochastic: mainInd.stochasticK > 80 && mainInd.stochasticK < mainInd.stochasticD,
-      ema: mainInd.emaShort < mainInd.emaLong,
-      macd: mainInd.macdHistogram < 0 && mainInd.macdHistogram < mainInd.macdSignal,
-      volume: lastVolume > mainInd.volumeSMA * 1.5,
-      fibonacci: lastClose >= mainInd.fibLevels.level38
-    };
-    
-    // Hitung jumlah kondisi terpenuhi
-    const buyScore = Object.values(buyConditions).filter(Boolean).length;
-    const sellScore = Object.values(sellConditions).filter(Boolean).length;
-    
-    // 3. Validasi sinyal dengan tren besar
-    let signal = null;
-    
-    // Sinyal beli kuat: tren bullish + 4+ kondisi
-    if (isBullishTrend && buyScore >= 4) {
-      signal = {
-        type: 'BUY',
-        price: lastClose,
-        timestamp: Date.now(),
-        symbol,
-        timeframe,
-        conditions: buyConditions,
-        score: buyScore
+      // 1. Konfirmasi arah tren besar (H1 dan D1)
+      const isBullishTrend = 
+        h1Ind.emaShort > h1Ind.emaLong && 
+        d1Ind.emaShort > d1Ind.emaLong;
+        
+      const isBearishTrend = 
+        h1Ind.emaShort < h1Ind.emaLong && 
+        d1Ind.emaShort < d1Ind.emaLong;
+      
+      // 2. Kondisi entry (dilonggarkan sedikit)
+      const buyConditions = {
+        rsi: mainInd.rsi < 35,  // dari 30 menjadi 35
+        stochastic: mainInd.stochasticK < 25 && mainInd.stochasticK > mainInd.stochasticD, // dari 20 menjadi 25
+        ema: mainInd.emaShort > mainInd.emaLong,
+        macd: mainInd.macdHistogram > 0 && mainInd.macdHistogram > mainInd.macdSignal,
+        volume: lastVolume > (mainInd.volumeSMA * 1.3), // dari 1.5 menjadi 1.3
+        fibonacci: lastClose <= (mainInd.fibLevels.level61 * 1.01) // tambah toleransi 1%
       };
-    }
-    // Sinyal jual kuat: tren bearish + 4+ kondisi
-    else if (isBearishTrend && sellScore >= 4) {
-      signal = {
-        type: 'SELL',
-        price: lastClose,
-        timestamp: Date.now(),
-        symbol,
-        timeframe,
-        conditions: sellConditions,
-        score: sellScore
+      
+      const sellConditions = {
+        rsi: mainInd.rsi > 65,  // dari 70 menjadi 65
+        stochastic: mainInd.stochasticK > 75 && mainInd.stochasticK < mainInd.stochasticD, // dari 80 menjadi 75
+        ema: mainInd.emaShort < mainInd.emaLong,
+        macd: mainInd.macdHistogram < 0 && mainInd.macdHistogram < mainInd.macdSignal,
+        volume: lastVolume > (mainInd.volumeSMA * 1.3), // dari 1.5 menjadi 1.3
+        fibonacci: lastClose >= (mainInd.fibLevels.level38 * 0.99) // tambah toleransi 1%
       };
+      
+      // Hitung jumlah kondisi terpenuhi
+      const buyScore = Object.values(buyConditions).filter(Boolean).length;
+      const sellScore = Object.values(sellConditions).filter(Boolean).length;
+      
+      // 3. Validasi sinyal dengan tren besar
+      let signal = null;
+      
+      // Sinyal beli kuat: tren bullish + 4+ kondisi
+      if (isBullishTrend && buyScore >= 4) {
+        signal = {
+          type: 'BUY',
+          price: lastClose,
+          timestamp: Date.now(),
+          symbol,
+          timeframe,
+          conditions: buyConditions,
+          score: buyScore
+        };
+        addLog(`🚀 BUY signal terdeteksi! Skor: ${buyScore}/6 | Harga: $${lastClose}`);
+      }
+      // Sinyal jual kuat: tren bearish + 4+ kondisi
+      else if (isBearishTrend && sellScore >= 4) {
+        signal = {
+          type: 'SELL',
+          price: lastClose,
+          timestamp: Date.now(),
+          symbol,
+          timeframe,
+          conditions: sellConditions,
+          score: sellScore
+        };
+        addLog(`🚨 SELL signal terdeteksi! Skor: ${sellScore}/6 | Harga: $${lastClose}`);
+      }
+      // Sinyal counter-trend (hanya jika 5+ kondisi)
+      else if (buyScore >= 4) { // dari 5 menjadi 4
+        signal = {
+          type: 'BUY',
+          price: lastClose,
+          timestamp: Date.now(),
+          symbol,
+          timeframe,
+          conditions: buyConditions,
+          score: buyScore,
+          counterTrend: true
+        };
+        addLog(`⚠️ Counter BUY signal terdeteksi! Skor: ${buyScore}/6 | Harga: $${lastClose}`);
+      }
+      else if (sellScore >= 4) { // dari 5 menjadi 4
+        signal = {
+          type: 'SELL',
+          price: lastClose,
+          timestamp: Date.now(),
+          symbol,
+          timeframe,
+          conditions: sellConditions,
+          score: sellScore,
+          counterTrend: true
+        };
+        addLog(`⚠️ Counter SELL signal terdeteksi! Skor: ${sellScore}/6 | Harga: $${lastClose}`);
+      } else {
+        addLog(`Tidak ada sinyal yang memenuhi syarat. Skor BUY: ${buyScore}, SELL: ${sellScore}`);
+      }
+      
+      return signal;
+    } catch (e) {
+      addLog(`Error generate sinyal: ${e.message}`);
+      return null;
     }
-    // Sinyal counter-trend (hanya jika 5+ kondisi)
-    else if (buyScore >= 5) {
-      signal = {
-        type: 'BUY',
-        price: lastClose,
-        timestamp: Date.now(),
-        symbol,
-        timeframe,
-        conditions: buyConditions,
-        score: buyScore,
-        counterTrend: true
-      };
-    }
-    else if (sellScore >= 5) {
-      signal = {
-        type: 'SELL',
-        price: lastClose,
-        timestamp: Date.now(),
-        symbol,
-        timeframe,
-        conditions: sellConditions,
-        score: sellScore,
-        counterTrend: true
-      };
-    }
-    
-    return signal;
   };
 
   // Eksekusi trade dengan manajemen risiko
@@ -315,13 +376,15 @@ const ProfessionalTradingBot = () => {
     if (!clientRef.current || !signal) return;
     
     try {
+      addLog(`Memulai eksekusi order ${signal.type}...`);
+      
       // Hitung ukuran posisi (1% risiko)
       const usdtBalance = balance.USDT;
       const riskAmount = usdtBalance * (settings.riskPerTrade / 100);
       const entryPrice = signal.price;
       
       // Hitung SL dan TP berdasarkan ATR
-      const atrValue = indicators.main.atr;
+      const atrValue = indicators.main.atr || 100; // default value jika ATR tidak ada
       const sl = signal.type === 'BUY' 
         ? entryPrice - (1.5 * atrValue)
         : entryPrice + (1.5 * atrValue);
@@ -365,20 +428,102 @@ const ProfessionalTradingBot = () => {
         }));
       }
       
+      addLog(`✅ Order ${signal.type} dieksekusi! 
+        Jumlah: ${quantity.toFixed(6)} | 
+        Entry: $${entryPrice.toFixed(2)} | 
+        SL: $${sl.toFixed(2)} | 
+        TP: $${tp.toFixed(2)}`);
+      
       return newTrade;
       
     } catch (error) {
-      console.error('Trade execution error:', error);
+      const errMsg = `Trade execution error: ${error.message}`;
+      console.error(errMsg);
+      addLog(errMsg);
     }
+  };
+
+  // Cek apakah trade perlu ditutup
+  const checkTradeClosure = () => {
+    if (candles.length === 0) return;
+    
+    const currentPrice = parseFloat(candles[candles.length - 1]?.close);
+    if (!currentPrice) {
+      addLog("Harga saat ini tidak tersedia untuk pengecekan trade");
+      return;
+    }
+    
+    setTrades(prev => prev.map(trade => {
+      if (trade.status !== 'OPEN') return trade;
+      
+      let shouldClose = false;
+      let closeReason = '';
+      
+      if (trade.type === 'BUY') {
+        if (currentPrice >= trade.takeProfit) {
+          shouldClose = true;
+          closeReason = 'TP HIT';
+        } else if (currentPrice <= trade.stopLoss) {
+          shouldClose = true;
+          closeReason = 'SL HIT';
+        }
+      } else {
+        if (currentPrice <= trade.takeProfit) {
+          shouldClose = true;
+          closeReason = 'TP HIT';
+        } else if (currentPrice >= trade.stopLoss) {
+          shouldClose = true;
+          closeReason = 'SL HIT';
+        }
+      }
+      
+      if (shouldClose) {
+        // Simulasi update balance
+        const profit = trade.type === 'BUY'
+          ? (currentPrice - trade.entryPrice) * trade.quantity
+          : (trade.entryPrice - currentPrice) * trade.quantity;
+        
+        setBalance(prev => ({
+          USDT: prev.USDT + (trade.type === 'BUY' 
+            ? currentPrice * trade.quantity 
+            : (trade.entryPrice * trade.quantity) + profit),
+          BTC: trade.type === 'BUY' 
+            ? prev.BTC - trade.quantity 
+            : prev.BTC + trade.quantity
+        }));
+        
+        addLog(`🔔 Trade ditutup: ${trade.type} ${trade.symbol} 
+          | Alasan: ${closeReason} 
+          | Profit: $${profit.toFixed(2)}`);
+        
+        return {
+          ...trade,
+          exitPrice: currentPrice,
+          closeTime: Date.now(),
+          status: 'CLOSED',
+          pnl: profit,
+          closeReason
+        };
+      }
+      
+      return trade;
+    }));
   };
 
   // Main bot loop
   const runBotCycle = async () => {
-    if (botStatus !== 'running') return;
+    if (botStatus !== 'running') {
+      addLog("Bot tidak berjalan, skip cycle");
+      return;
+    }
     
     try {
+      addLog("Memulai siklus bot...");
       const candlesData = await fetchMultiTimeframeCandles();
-      if (!candlesData) return;
+      if (!candlesData) {
+        addLog("Data candle tidak tersedia, skip siklus");
+        return;
+      }
       
       const signal = generateSignal(candlesData, indicators);
       if (signal) {
@@ -386,39 +531,145 @@ const ProfessionalTradingBot = () => {
         await executeTrade(signal);
       }
       
+      checkTradeClosure();
+      
       // Hitung statistik performa
       calculatePerformance();
       
+      addLog("Siklus bot selesai");
     } catch (error) {
-      console.error('Bot cycle error:', error);
+      const errMsg = `Bot cycle error: ${error.message}`;
+      console.error(errMsg);
+      addLog(errMsg);
     }
   };
 
   // Setup Binance client
   useEffect(() => {
-    if (config.apiKey && config.apiSecret) {
-      clientRef.current = createClient(
-        config.apiKey, 
-        config.apiSecret, 
-        config.isTestnet
-      );
-      
-      // Inisialisasi balance
-      setBalance({ USDT: 10000, BTC: 0 });
-      fetchMultiTimeframeCandles();
-    }
+    const initClient = async () => {
+      if (config.apiKey && config.apiSecret) {
+        try {
+          clientRef.current = createClient(
+            config.apiKey, 
+            config.apiSecret, 
+            config.isTestnet
+          );
+          
+          // Test connection
+          await clientRef.current.time();
+          
+          addLog(`✅ Client Binance diinisialisasi (${config.isTestnet ? 'TESTNET' : 'LIVE'})`);
+          
+          // Inisialisasi balance
+          setBalance({ USDT: 10000, BTC: 0 });
+          await fetchMultiTimeframeCandles();
+        } catch (e) {
+          const errMsg = `❌ Gagal inisialisasi client: ${e.message}`;
+          setError(errMsg);
+          addLog(errMsg);
+        }
+      } else {
+        const errMsg = "⚠️ API Key/Secret tidak ditemukan. Silakan konfigurasi di .env";
+        setError(errMsg);
+        addLog(errMsg);
+      }
+    };
+
+    initClient();
   }, [config]);
+
+  // Setup WebSocket untuk harga real-time
+  useEffect(() => {
+    if (wsRef.current) {
+      wsRef.current.close();
+      addLog("WebSocket sebelumnya ditutup");
+    }
+    
+    addLog(`Menyiapkan WebSocket untuk ${symbol}@kline_${timeframe}`);
+    
+    const ws = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_${timeframe}`);
+    wsRef.current = ws;
+    
+    ws.onopen = () => {
+      addLog("✅ WebSocket terhubung");
+    };
+    
+    ws.onerror = (err) => {
+      addLog(`❌ WebSocket error: ${err.message || 'Unknown error'}`);
+    };
+    
+    ws.onclose = () => {
+      addLog("📛 WebSocket ditutup");
+    };
+    
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      const kline = data.k;
+      
+      // Update candle terakhir
+      setCandles(prev => {
+        if (!prev || prev.length === 0) return prev;
+        
+        const newCandles = [...prev];
+        const lastCandle = newCandles[newCandles.length - 1];
+        
+        if (lastCandle && lastCandle.openTime === kline.t) {
+          newCandles[newCandles.length - 1] = {
+            open: kline.o,
+            high: kline.h,
+            low: kline.l,
+            close: kline.c,
+            volume: kline.v,
+            openTime: kline.t,
+            closeTime: kline.T
+          };
+        } else {
+          newCandles.push({
+            open: kline.o,
+            high: kline.h,
+            low: kline.l,
+            close: kline.c,
+            volume: kline.v,
+            openTime: kline.t,
+            closeTime: kline.T
+          });
+          
+          // Pertahankan maks 100 candle
+          if (newCandles.length > 100) {
+            newCandles.shift();
+          }
+        }
+        
+        return newCandles;
+      });
+    };
+    
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
+  }, [symbol, timeframe]);
 
   // Setup bot interval
   useEffect(() => {
     if (botStatus === 'running') {
+      addLog("🚀 Memulai bot trading");
       runBotCycle(); // Jalankan segera
       botIntervalRef.current = setInterval(runBotCycle, 30000); // Jalankan setiap 30 detik
+      addLog("⏱️ Interval bot diatur setiap 30 detik");
     } else {
-      clearInterval(botIntervalRef.current);
+      if (botIntervalRef.current) {
+        clearInterval(botIntervalRef.current);
+        addLog("⏹️ Bot dihentikan");
+      }
     }
     
-    return () => clearInterval(botIntervalRef.current);
+    return () => {
+      if (botIntervalRef.current) {
+        clearInterval(botIntervalRef.current);
+      }
+    };
   }, [botStatus, symbol, timeframe]);
 
   // Kalkulasi statistik performa
@@ -466,7 +717,24 @@ const ProfessionalTradingBot = () => {
 
   // Render chart
   const renderMainChart = () => {
-    if (candles.length < 30) return null;
+    if (loading) {
+      return (
+        <div className="h-80 flex items-center justify-center">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto"></div>
+            <p className="mt-2 text-gray-400">Memuat data chart...</p>
+          </div>
+        </div>
+      );
+    }
+    
+    if (candles.length < 10) {
+      return (
+        <div className="h-80 flex items-center justify-center text-gray-400">
+          Tidak cukup data untuk menampilkan chart (minimal 10 candle)
+        </div>
+      );
+    }
     
     const labels = candles.map(c => new Date(c.openTime).toLocaleTimeString());
     const closes = candles.map(c => parseFloat(c.close));
@@ -545,7 +813,7 @@ const ProfessionalTradingBot = () => {
     };
     
     return (
-      <div className="h-96">
+      <div className="h-80">
         <Line data={data} options={options} />
       </div>
     );
@@ -562,71 +830,133 @@ const ProfessionalTradingBot = () => {
     );
   };
 
+  // Render log timestamp
+  const formatTime = (date) => {
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  };
+
+  // Force refresh data
+  const handleRefresh = async () => {
+    setLoading(true);
+    await fetchMultiTimeframeCandles();
+    addLog("Data diperbarui manual");
+  };
+
   return (
     <div className="min-h-screen bg-gray-900 text-gray-100">
       {/* Header */}
-      <header className="bg-gray-800 border-b border-gray-700">
-        <div className="max-w-7xl mx-auto px-4 py-3 flex justify-between items-center">
+      <header className="bg-gray-800 border-b border-gray-700 px-2 sm:px-4 py-3">
+        <div className="max-w-7xl mx-auto flex justify-between items-center">
           <div className="flex items-center space-x-2">
-            <FaChartLine className="text-blue-500 text-2xl" />
-            <h1 className="text-xl font-bold">ProTrade Bot</h1>
-            <span className="text-xs bg-blue-900 text-blue-200 px-2 py-1 rounded">
+            <FaChartLine className="text-blue-500 text-xl sm:text-2xl" />
+            <h1 className="text-lg sm:text-xl font-bold">ProTrade Bot</h1>
+            <span className="text-xs bg-blue-900 text-blue-200 px-2 py-1 rounded hidden sm:block">
               {config.isTestnet ? 'TESTNET' : 'LIVE'}
             </span>
           </div>
           
-          <div className="flex items-center space-x-4">
-            <div className="text-sm">
-              <span className="text-gray-400">Equity: </span>
+          <div className="flex items-center space-x-2 sm:space-x-4">
+            <div className="text-xs sm:text-sm">
+              <span className="text-gray-400 hidden sm:inline">Equity: </span>
               <span className="font-bold">
                 ${(balance.USDT + (balance.BTC * (candles[candles.length - 1]?.close || 0))).toFixed(2)}
               </span>
             </div>
-            <div className="flex space-x-2">
+            <div className="flex space-x-1 sm:space-x-2">
               <button 
                 onClick={() => setBotStatus('running')}
                 disabled={botStatus === 'running'}
-                className={`px-3 py-1 rounded flex items-center ${
+                className={`px-2 py-1 sm:px-3 sm:py-1 rounded flex items-center text-xs sm:text-sm ${
                   botStatus === 'running' 
                     ? 'bg-green-700 cursor-not-allowed' 
                     : 'bg-green-600 hover:bg-green-700'
                 }`}
               >
-                <FaPlay className="mr-1" /> Start
+                <FaPlay className="mr-0 sm:mr-1" /> 
+                <span className="hidden sm:inline">Start</span>
               </button>
               <button 
                 onClick={() => setBotStatus('stopped')}
                 disabled={botStatus === 'stopped'}
-                className={`px-3 py-1 rounded flex items-center ${
+                className={`px-2 py-1 sm:px-3 sm:py-1 rounded flex items-center text-xs sm:text-sm ${
                   botStatus === 'stopped' 
                     ? 'bg-red-700 cursor-not-allowed' 
                     : 'bg-red-600 hover:bg-red-700'
                 }`}
               >
-                <FaStop className="mr-1" /> Stop
+                <FaStop className="mr-0 sm:mr-1" /> 
+                <span className="hidden sm:inline">Stop</span>
+              </button>
+              <button
+                onClick={handleRefresh}
+                className="px-2 py-1 sm:px-3 sm:py-1 rounded flex items-center bg-blue-600 hover:bg-blue-700 text-xs sm:text-sm"
+              >
+                <FaRedo className="mr-0 sm:mr-1" />
+                <span className="hidden sm:inline">Refresh</span>
               </button>
             </div>
           </div>
         </div>
       </header>
       
-      <main className="max-w-7xl mx-auto px-4 py-6">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+      <main className="max-w-7xl mx-auto px-2 sm:px-4 py-4 sm:py-6">
+        {error && (
+          <div className="bg-red-900 border border-red-700 text-red-200 p-3 rounded-lg mb-4 flex items-center">
+            <FaInfoCircle className="mr-2" />
+            {error}
+          </div>
+        )}
+
+        {/* Mobile Control Bar */}
+        <div className="sm:hidden bg-gray-800 rounded-lg p-3 mb-4">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Symbol</label>
+              <select
+                value={symbol}
+                onChange={(e) => setSymbol(e.target.value)}
+                className="w-full bg-gray-700 text-white px-2 py-1 text-sm rounded"
+              >
+                <option value="BTCUSDT">BTC/USDT</option>
+                <option value="ETHUSDT">ETH/USDT</option>
+                <option value="BNBUSDT">BNB/USDT</option>
+                <option value="SOLUSDT">SOL/USDT</option>
+                <option value="XRPUSDT">XRP/USDT</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Timeframe</label>
+              <select
+                value={timeframe}
+                onChange={(e) => setTimeframe(e.target.value)}
+                className="w-full bg-gray-700 text-white px-2 py-1 text-sm rounded"
+              >
+                <option value="1m">1m</option>
+                <option value="3m">3m</option>
+                <option value="5m">5m</option>
+                <option value="15m">15m</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6 mb-4 sm:mb-6">
           {/* Panel Kontrol & Statistik */}
-          <div className="lg:col-span-1 space-y-6">
+          <div className="lg:col-span-1 space-y-4 sm:space-y-6">
             {/* Kontrol Bot */}
-            <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-              <h2 className="text-lg font-semibold mb-4 flex items-center">
-                <FaSync className="mr-2 text-blue-400" /> Bot Control
+            <div className="bg-gray-800 rounded-lg p-3 sm:p-4 border border-gray-700">
+              <h2 className="text-md sm:text-lg font-semibold mb-3 flex items-center">
+                <FaCog className="mr-2 text-blue-400 text-sm sm:text-base" /> Bot Control
               </h2>
               
-              <div className="grid grid-cols-2 gap-4 mb-4">
+              {/* Desktop-only controls */}
+              <div className="hidden sm:grid grid-cols-2 gap-4 mb-4">
                 <div>
                   <label className="block text-sm text-gray-400 mb-1">Symbol</label>
                   <select
                     value={symbol}
                     onChange={(e) => setSymbol(e.target.value)}
-                    className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded focus:ring-blue-500 focus:border-blue-500"
+                    className="w-full bg-gray-700 text-white px-3 py-2 rounded"
                   >
                     <option value="BTCUSDT">BTC/USDT</option>
                     <option value="ETHUSDT">ETH/USDT</option>
@@ -640,7 +970,7 @@ const ProfessionalTradingBot = () => {
                   <select
                     value={timeframe}
                     onChange={(e) => setTimeframe(e.target.value)}
-                    className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded focus:ring-blue-500 focus:border-blue-500"
+                    className="w-full bg-gray-700 text-white px-3 py-2 rounded"
                   >
                     <option value="1m">1 Minute</option>
                     <option value="3m">3 Minutes</option>
@@ -650,12 +980,12 @@ const ProfessionalTradingBot = () => {
                 </div>
               </div>
               
-              <div className="mb-4">
-                <label className="block text-sm text-gray-400 mb-1">Risk Management</label>
-                <div className="grid grid-cols-2 gap-4">
+              <div className="mb-3 sm:mb-4">
+                <label className="block text-xs sm:text-sm text-gray-400 mb-1">Risk Management</label>
+                <div className="grid grid-cols-2 gap-3">
                   <div>
                     <div className="flex justify-between text-xs mb-1">
-                      <span>Risk per Trade</span>
+                      <span>Risk/Trade</span>
                       <span>{settings.riskPerTrade}%</span>
                     </div>
                     <input
@@ -687,39 +1017,39 @@ const ProfessionalTradingBot = () => {
               </div>
               
               <div className="flex justify-between items-center pt-3 border-t border-gray-700">
-                <div className="text-sm">
-                  <div className="text-gray-400">Current Status</div>
+                <div className="text-xs sm:text-sm">
+                  <div className="text-gray-400">Status</div>
                   <div className={botStatus === 'running' ? 'text-green-400' : 'text-red-400'}>
                     {botStatus === 'running' ? 'RUNNING' : 'STOPPED'}
                   </div>
                 </div>
-                <div className="text-sm">
+                <div className="text-xs sm:text-sm">
                   <div className="text-gray-400">Last Signal</div>
                   <div>
                     {signals.length > 0 ? 
-                      new Date(signals[0].timestamp).toLocaleTimeString() : 'N/A'}
+                      new Date(signals[0].timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'N/A'}
                   </div>
                 </div>
               </div>
             </div>
             
             {/* Statistik Akun */}
-            <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-              <h2 className="text-lg font-semibold mb-4 flex items-center">
-                <FaDollarSign className="mr-2 text-green-400" /> Account Summary
+            <div className="bg-gray-800 rounded-lg p-3 sm:p-4 border border-gray-700">
+              <h2 className="text-md sm:text-lg font-semibold mb-3 flex items-center">
+                <FaDollarSign className="mr-2 text-green-400 text-sm sm:text-base" /> Account
               </h2>
               
-              <div className="space-y-3">
-                <div className="flex justify-between">
-                  <span className="text-gray-400">USDT Balance:</span>
+              <div className="space-y-2 sm:space-y-3">
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">USDT:</span>
                   <span className="font-bold">${balance.USDT.toFixed(2)}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-400">Crypto Balance:</span>
-                  <span className="font-bold">{balance.BTC.toFixed(6)} {symbol.replace('USDT', '')}</span>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">{symbol.replace('USDT', '')}:</span>
+                  <span className="font-bold">{balance.BTC.toFixed(6)}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-400">Total Equity:</span>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Equity:</span>
                   <span className="font-bold">
                     ${(balance.USDT + (balance.BTC * (candles[candles.length - 1]?.close || 0))).toFixed(2)}
                   </span>
@@ -727,30 +1057,43 @@ const ProfessionalTradingBot = () => {
                 
                 {performanceStats && (
                   <div className="pt-3 border-t border-gray-700">
-                    <div className="flex justify-between">
+                    <div className="flex justify-between text-sm">
                       <span className="text-gray-400">Win Rate:</span>
                       <span className={performanceStats.winRate > 60 ? 'text-green-400' : 'text-yellow-400'}>
                         {performanceStats.winRate}%
                       </span>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-400">Expectancy:</span>
-                      <span className={performanceStats.expectancy > 0 ? 'text-green-400' : 'text-red-400'}>
-                        ${performanceStats.expectancy}
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-400">Net Profit:</span>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-400">Profit:</span>
                       <span className={performanceStats.netProfit > 0 ? 'text-green-400' : 'text-red-400'}>
                         ${performanceStats.netProfit.toFixed(2)}
                       </span>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-400">Max Drawdown:</span>
-                      <span className="text-orange-400">
-                        {performanceStats.maxDrawdown}%
-                      </span>
-                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Bot Logs */}
+            <div className="bg-gray-800 rounded-lg p-3 sm:p-4 border border-gray-700">
+              <h2 className="text-md sm:text-lg font-semibold mb-3 flex items-center">
+                <FaInfoCircle className="mr-2 text-blue-400" /> Bot Logs
+              </h2>
+              <div className="h-60 overflow-y-auto">
+                {botLogs.length > 0 ? (
+                  <div className="text-xs space-y-2">
+                    {botLogs.map((log, index) => (
+                      <div key={index} className="border-b border-gray-700 pb-2">
+                        <div className="text-gray-400 text-xs">
+                          {formatTime(log.timestamp)}
+                        </div>
+                        <div className="mt-1">{log.message}</div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-8 text-gray-500 text-sm">
+                    Tidak ada log tersedia
                   </div>
                 )}
               </div>
@@ -758,27 +1101,29 @@ const ProfessionalTradingBot = () => {
           </div>
           
           {/* Chart Utama */}
-          <div className="lg:col-span-2 bg-gray-800 rounded-lg p-4 border border-gray-700">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-lg font-semibold">Market Analysis - {symbol} ({timeframe})</h2>
-              <div className="flex space-x-2">
+          <div className="lg:col-span-2 bg-gray-800 rounded-lg p-3 sm:p-4 border border-gray-700">
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-3 sm:mb-4">
+              <h2 className="text-md sm:text-lg font-semibold mb-2 sm:mb-0">
+                {symbol} ({timeframe})
+              </h2>
+              <div className="flex space-x-1 sm:space-x-2">
                 {indicators.main && (
-                  <div className="flex space-x-2">
+                  <div className="flex flex-wrap gap-1 sm:gap-2">
                     <div className={`px-2 py-1 rounded text-xs ${
                       indicators.main.emaShort > indicators.main.emaLong 
                         ? 'bg-green-500 text-white' 
                         : 'bg-red-500 text-white'
                     }`}>
-                      EMA: {indicators.main.emaShort > indicators.main.emaLong ? 'BULL' : 'BEAR'}
+                      {indicators.main.emaShort > indicators.main.emaLong ? 'BULL' : 'BEAR'}
                     </div>
                     <div className={`px-2 py-1 rounded text-xs ${
-                      indicators.main.rsi < 30 
+                      indicators.main.rsi < 35 
                         ? 'bg-green-500 text-white' 
-                        : indicators.main.rsi > 70 
+                        : indicators.main.rsi > 65 
                           ? 'bg-red-500 text-white' 
                           : 'bg-gray-700 text-gray-300'
                     }`}>
-                      RSI: {indicators.main.rsi?.toFixed(1) || 'N/A'}
+                      RSI: {indicators.main.rsi?.toFixed(0) || 'N/A'}
                     </div>
                   </div>
                 )}
@@ -787,32 +1132,32 @@ const ProfessionalTradingBot = () => {
             
             {renderMainChart()}
             
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
-              <div className="bg-gray-700 p-3 rounded border border-gray-600">
-                <div className="text-sm text-gray-400">Stochastic</div>
-                <div className="text-xl">
-                  {indicators.main?.stochasticK?.toFixed(1) || 'N/A'} / 
-                  {indicators.main?.stochasticD?.toFixed(1) || 'N/A'}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3 mt-3 sm:mt-4">
+              <div className="bg-gray-700 p-2 rounded border border-gray-600">
+                <div className="text-xs text-gray-400">Stochastic</div>
+                <div className="text-sm sm:text-base">
+                  {indicators.main?.stochasticK?.toFixed(0) || 'N/A'} / 
+                  {indicators.main?.stochasticD?.toFixed(0) || 'N/A'}
                 </div>
               </div>
-              <div className="bg-gray-700 p-3 rounded border border-gray-600">
-                <div className="text-sm text-gray-400">MACD</div>
-                <div className="text-xl">
-                  {indicators.main?.macdHistogram?.toFixed(2) || 'N/A'}
+              <div className="bg-gray-700 p-2 rounded border border-gray-600">
+                <div className="text-xs text-gray-400">MACD</div>
+                <div className="text-sm sm:text-base">
+                  {indicators.main?.macdHistogram?.toFixed(1) || 'N/A'}
                 </div>
               </div>
-              <div className="bg-gray-700 p-3 rounded border border-gray-600">
-                <div className="text-sm text-gray-400">Volume</div>
-                <div className="text-xl">
+              <div className="bg-gray-700 p-2 rounded border border-gray-600">
+                <div className="text-xs text-gray-400">Volume</div>
+                <div className="text-sm sm:text-base">
                   {indicators.main?.volumeSMA 
                     ? (candles[candles.length - 1]?.volume / indicators.main.volumeSMA).toFixed(1) + 'x' 
                     : 'N/A'}
                 </div>
               </div>
-              <div className="bg-gray-700 p-3 rounded border border-gray-600">
-                <div className="text-sm text-gray-400">ATR</div>
-                <div className="text-xl">
-                  {indicators.main?.atr?.toFixed(2) || 'N/A'}
+              <div className="bg-gray-700 p-2 rounded border border-gray-600">
+                <div className="text-xs text-gray-400">ATR</div>
+                <div className="text-sm sm:text-base">
+                  {indicators.main?.atr?.toFixed(1) || 'N/A'}
                 </div>
               </div>
             </div>
@@ -820,77 +1165,81 @@ const ProfessionalTradingBot = () => {
         </div>
         
         {/* Sinyal dan Trading */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 mb-4 sm:mb-6">
           {/* Sinyal Terbaru */}
-          <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-            <h2 className="text-lg font-semibold mb-4">Trading Signals</h2>
+          <div className="bg-gray-800 rounded-lg p-3 sm:p-4 border border-gray-700">
+            <h2 className="text-md sm:text-lg font-semibold mb-3 sm:mb-4 flex items-center">
+              <FaSignal className="mr-2 text-yellow-400" /> Trading Signals
+            </h2>
             
-            <div className="space-y-4">
+            <div className="space-y-3">
               {signals.slice(0, 3).map((signal, index) => (
                 <div 
                   key={index} 
-                  className={`p-3 rounded border ${
+                  className={`p-2 sm:p-3 rounded border ${
                     signal.type === 'BUY' 
                       ? 'border-green-500 bg-green-900 bg-opacity-20' 
                       : 'border-red-500 bg-red-900 bg-opacity-20'
                   }`}
                 >
-                  <div className="flex justify-between items-start mb-2">
+                  <div className="flex justify-between items-start mb-1 sm:mb-2">
                     <div>
-                      <span className={`font-bold ${
+                      <span className={`font-bold text-sm sm:text-base ${
                         signal.type === 'BUY' ? 'text-green-400' : 'text-red-400'
                       }`}>
-                        {signal.type} SIGNAL
+                        {signal.type}
                       </span>
-                      <span className="text-xs bg-gray-700 px-2 py-1 rounded ml-2">
-                        Score: {signal.score}/6
+                      <span className="text-xs bg-gray-700 px-1 sm:px-2 py-0.5 rounded ml-1">
+                        {signal.score}/6
                       </span>
                       {signal.counterTrend && (
-                        <span className="text-xs bg-yellow-700 px-2 py-1 rounded ml-2">
-                          Counter-Trend
+                        <span className="text-xs bg-yellow-700 px-1 sm:px-2 py-0.5 rounded ml-1">
+                          Counter
                         </span>
                       )}
                     </div>
-                    <div className="text-sm text-gray-400">
-                      {new Date(signal.timestamp).toLocaleTimeString()}
+                    <div className="text-xs text-gray-400">
+                      {new Date(signal.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
                     </div>
                   </div>
                   
-                  <div className="text-sm mb-2">Price: ${signal.price.toFixed(2)}</div>
+                  <div className="text-xs sm:text-sm mb-1">Price: ${signal.price.toFixed(2)}</div>
                   
-                  <div className="flex flex-wrap gap-2">
+                  <div className="flex flex-wrap gap-1">
                     {renderConditionBadge(signal.conditions.rsi, 'RSI')}
                     {renderConditionBadge(signal.conditions.stochastic, 'Stoch')}
                     {renderConditionBadge(signal.conditions.ema, 'EMA')}
                     {renderConditionBadge(signal.conditions.macd, 'MACD')}
-                    {renderConditionBadge(signal.conditions.volume, 'Volume')}
+                    {renderConditionBadge(signal.conditions.volume, 'Vol')}
                     {renderConditionBadge(signal.conditions.fibonacci, 'Fib')}
                   </div>
                 </div>
               ))}
               
               {signals.length === 0 && (
-                <div className="text-center py-8 text-gray-500">
-                  No trading signals detected yet
+                <div className="text-center py-4 text-gray-500 text-sm">
+                  Tidak ada sinyal trading terdeteksi
                 </div>
               )}
             </div>
           </div>
           
           {/* Trading Aktif */}
-          <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-            <h2 className="text-lg font-semibold mb-4">Active Positions</h2>
+          <div className="bg-gray-800 rounded-lg p-3 sm:p-4 border border-gray-700">
+            <h2 className="text-md sm:text-lg font-semibold mb-3 sm:mb-4 flex items-center">
+              <FaExchangeAlt className="mr-2 text-purple-400" /> Active Positions
+            </h2>
             
             <div className="overflow-x-auto">
-              <table className="w-full">
+              <table className="w-full min-w-[500px] sm:min-w-0">
                 <thead>
-                  <tr className="text-left text-sm text-gray-400">
-                    <th className="pb-2">Symbol</th>
-                    <th className="pb-2">Type</th>
-                    <th className="pb-2">Entry</th>
-                    <th className="pb-2">SL/TP</th>
-                    <th className="pb-2">Current</th>
-                    <th className="pb-2">PNL</th>
+                  <tr className="text-left text-xs sm:text-sm text-gray-400">
+                    <th className="pb-1 sm:pb-2">Symbol</th>
+                    <th className="pb-1 sm:pb-2">Type</th>
+                    <th className="pb-1 sm:pb-2">Entry</th>
+                    <th className="pb-1 sm:pb-2">SL/TP</th>
+                    <th className="pb-1 sm:pb-2">Current</th>
+                    <th className="pb-1 sm:pb-2">PNL</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -903,25 +1252,25 @@ const ProfessionalTradingBot = () => {
                     const pnlPercent = (pnl / (trade.entryPrice * trade.quantity)) * 100;
                     
                     return (
-                      <tr key={trade.id} className="border-b border-gray-700">
-                        <td className="py-2">{trade.symbol}</td>
-                        <td className={`py-2 font-bold ${
+                      <tr key={trade.id} className="border-b border-gray-700 text-xs sm:text-sm">
+                        <td className="py-1 sm:py-2">{trade.symbol}</td>
+                        <td className={`py-1 sm:py-2 font-bold ${
                           trade.type === 'BUY' ? 'text-green-400' : 'text-red-400'
                         }`}>
                           {trade.type}
                         </td>
-                        <td className="py-2">${trade.entryPrice.toFixed(2)}</td>
-                        <td className="py-2">
+                        <td className="py-1 sm:py-2">${trade.entryPrice.toFixed(2)}</td>
+                        <td className="py-1 sm:py-2">
                           <div>${trade.stopLoss.toFixed(2)}</div>
                           <div>${trade.takeProfit.toFixed(2)}</div>
                         </td>
-                        <td className="py-2">${parseFloat(currentPrice).toFixed(2)}</td>
-                        <td className={`py-2 font-bold ${
+                        <td className="py-1 sm:py-2">${parseFloat(currentPrice).toFixed(2)}</td>
+                        <td className={`py-1 sm:py-2 font-bold ${
                           pnl > 0 ? 'text-green-400' : 'text-red-400'
                         }`}>
                           ${pnl.toFixed(2)}
                           <div className="text-xs">
-                            {pnlPercent.toFixed(2)}%
+                            {pnlPercent.toFixed(1)}%
                           </div>
                         </td>
                       </tr>
@@ -930,8 +1279,8 @@ const ProfessionalTradingBot = () => {
                   
                   {trades.filter(t => t.status === 'OPEN').length === 0 && (
                     <tr>
-                      <td colSpan="6" className="py-8 text-center text-gray-500">
-                        No active positions
+                      <td colSpan="6" className="py-4 text-center text-gray-500 text-sm">
+                        Tidak ada posisi aktif
                       </td>
                     </tr>
                   )}
@@ -941,10 +1290,62 @@ const ProfessionalTradingBot = () => {
           </div>
         </div>
         
+        {/* Riwayat Trading */}
+        <div className="bg-gray-800 rounded-lg p-3 sm:p-4 border border-gray-700">
+          <h2 className="text-md sm:text-lg font-semibold mb-3 sm:mb-4 flex items-center">
+            <FaHistory className="mr-2 text-blue-400" /> Trade History
+          </h2>
+          
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[600px] sm:min-w-0">
+              <thead>
+                <tr className="text-left text-xs sm:text-sm text-gray-400">
+                  <th className="pb-1 sm:pb-2">Time</th>
+                  <th className="pb-1 sm:pb-2">Symbol</th>
+                  <th className="pb-1 sm:pb-2">Type</th>
+                  <th className="pb-1 sm:pb-2">Entry</th>
+                  <th className="pb-1 sm:pb-2">Exit</th>
+                  <th className="pb-1 sm:pb-2">PNL</th>
+                </tr>
+              </thead>
+              <tbody>
+                {trades.filter(t => t.status === 'CLOSED').slice(0, 5).map((trade) => (
+                  <tr key={trade.id} className="border-b border-gray-700 text-xs sm:text-sm">
+                    <td className="py-1 sm:py-2">
+                      {new Date(trade.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                    </td>
+                    <td className="py-1 sm:py-2">{trade.symbol}</td>
+                    <td className={`py-1 sm:py-2 font-bold ${
+                      trade.type === 'BUY' ? 'text-green-400' : 'text-red-400'
+                    }`}>
+                      {trade.type}
+                    </td>
+                    <td className="py-1 sm:py-2">${trade.entryPrice.toFixed(2)}</td>
+                    <td className="py-1 sm:py-2">${trade.exitPrice.toFixed(2)}</td>
+                    <td className={`py-1 sm:py-2 font-bold ${
+                      trade.pnl > 0 ? 'text-green-400' : 'text-red-400'
+                    }`}>
+                      ${trade.pnl.toFixed(2)}
+                    </td>
+                  </tr>
+                ))}
+                
+                {trades.filter(t => t.status === 'CLOSED').length === 0 && (
+                  <tr>
+                    <td colSpan="6" className="py-4 text-center text-gray-500 text-sm">
+                      Tidak ada riwayat trading
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        
         {/* Analisis Teknikal Lanjutan */}
-        <div className="bg-gray-800 rounded-lg p-4 border border-gray-700 mb-6">
-          <h2 className="text-lg font-semibold mb-4">Advanced Technical Analysis</h2>
-          <div className="h-96">
+        <div className="bg-gray-800 rounded-lg p-3 sm:p-4 border border-gray-700">
+          <h2 className="text-md sm:text-lg font-semibold mb-3 sm:mb-4">Technical Analysis</h2>
+          <div className="h-80">
             <TechnicalAnalysis 
               symbol={`BINANCE:${symbol}`}
               colorTheme="dark"
@@ -952,74 +1353,6 @@ const ProfessionalTradingBot = () => {
               height="100%"
               isTransparent
             />
-          </div>
-        </div>
-        
-        {/* Riwayat Trading */}
-        <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-          <h2 className="text-lg font-semibold mb-4">Trade History</h2>
-          
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="text-left text-sm text-gray-400">
-                  <th className="pb-2">Time</th>
-                  <th className="pb-2">Symbol</th>
-                  <th className="pb-2">Type</th>
-                  <th className="pb-2">Entry</th>
-                  <th className="pb-2">Exit</th>
-                  <th className="pb-2">Size</th>
-                  <th className="pb-2">Duration</th>
-                  <th className="pb-2">PNL</th>
-                  <th className="pb-2">Reason</th>
-                </tr>
-              </thead>
-              <tbody>
-                {trades.filter(t => t.status === 'CLOSED').slice(0, 10).map((trade) => (
-                  <tr key={trade.id} className="border-b border-gray-700">
-                    <td className="py-2">
-                      {new Date(trade.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                    </td>
-                    <td className="py-2">{trade.symbol}</td>
-                    <td className={`py-2 font-bold ${
-                      trade.type === 'BUY' ? 'text-green-400' : 'text-red-400'
-                    }`}>
-                      {trade.type}
-                    </td>
-                    <td className="py-2">${trade.entryPrice.toFixed(2)}</td>
-                    <td className="py-2">${trade.exitPrice.toFixed(2)}</td>
-                    <td className="py-2">{trade.quantity.toFixed(6)}</td>
-                    <td className="py-2">
-                      {Math.round((trade.closeTime - trade.timestamp) / 60000)} min
-                    </td>
-                    <td className={`py-2 font-bold ${
-                      trade.pnl > 0 ? 'text-green-400' : 'text-red-400'
-                    }`}>
-                      ${trade.pnl.toFixed(2)}
-                    </td>
-                    <td className="py-2">
-                      <span className={`text-xs px-2 py-1 rounded ${
-                        trade.closeReason === 'TP HIT' 
-                          ? 'bg-green-900 text-green-300' 
-                          : trade.closeReason === 'SL HIT'
-                            ? 'bg-red-900 text-red-300'
-                            : 'bg-gray-700'
-                      }`}>
-                        {trade.closeReason}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-                
-                {trades.filter(t => t.status === 'CLOSED').length === 0 && (
-                  <tr>
-                    <td colSpan="9" className="py-8 text-center text-gray-500">
-                      No trade history yet
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
           </div>
         </div>
       </main>
