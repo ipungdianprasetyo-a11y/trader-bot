@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import Binance from 'binance-api-node';
 import { 
   Line, Bar 
@@ -21,8 +22,11 @@ import dynamic from 'next/dynamic';
 import { 
   FaPlay, FaStop, FaChartLine, FaDollarSign, 
   FaCog, FaSignal, FaHistory, FaExchangeAlt,
-  FaInfoCircle, FaRedo
+  FaInfoCircle, FaRedo, FaSignOutAlt, FaShieldAlt
 } from 'react-icons/fa';
+import { clientAuth } from '../lib/auth';
+import { supabaseOperations } from '../lib/supabase';
+import { winRateService } from '../lib/winrateService';
 
 // Lazy load untuk Technical Analysis
 const TechnicalAnalysis = dynamic(
@@ -234,6 +238,12 @@ class TestnetTradingSimulator {
 }
 
 const ProfessionalTradingBot = () => {
+  const router = useRouter();
+  
+  // Authentication state
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [authLoading, setAuthLoading] = useState(true);
+  
   // State management
   const [symbol, setSymbol] = useState('BTCUSDT');
   const [timeframe, setTimeframe] = useState('5m');
@@ -276,6 +286,29 @@ const ProfessionalTradingBot = () => {
   const wsRef = useRef(null);
   const botIntervalRef = useRef(null);
   const testnetTradeTimeouts = useRef(new Map());
+
+  // Authentication check on component mount
+  useEffect(() => {
+    const checkAuth = () => {
+      if (clientAuth.isAuthenticated()) {
+        setIsAuthenticated(true);
+      } else {
+        router.push('/login');
+      }
+      setAuthLoading(false);
+    };
+
+    checkAuth();
+  }, [router]);
+
+  // Handle logout
+  const handleLogout = () => {
+    // Stop bot and winrate service before logout
+    if (botStatus === 'running') {
+      winRateService.stop();
+    }
+    clientAuth.logout();
+  };
 
   // Load data from localStorage on component mount
   useEffect(() => {
@@ -655,6 +688,15 @@ const ProfessionalTradingBot = () => {
       // Update state immediately
       setTrades(prev => [...prev, testnetTrade]);
       
+      // Save trade to Supabase
+      try {
+        await supabaseOperations.saveTrade(testnetTrade);
+        await supabaseOperations.saveLog('SUCCESS', `Trade executed: ${testnetTrade.type} ${testnetTrade.symbol}`, testnetTrade);
+      } catch (error) {
+        console.error('Error saving trade to Supabase:', error);
+        addLog(`❌ Error saving trade to database: ${error.message}`);
+      }
+      
       // Simulate balance update (testnet only - no real money involved)
       const riskAmount = Math.abs(testnetTrade.entryPrice - testnetTrade.stopLoss) * testnetTrade.quantity;
       if (testnetTrade.type === 'BUY') {
@@ -697,7 +739,7 @@ const ProfessionalTradingBot = () => {
   };
 
   // Close testnet trade based on predetermined outcome
-  const closeTestnetTrade = (tradeId) => {
+  const closeTestnetTrade = async (tradeId) => {
     setTrades(prev => prev.map(trade => {
       if (trade.id !== tradeId || trade.status !== 'OPEN') return trade;
       
@@ -720,6 +762,26 @@ const ProfessionalTradingBot = () => {
             };
           }
         });
+        
+        // Save trade update to Supabase
+        const updateTrade = async () => {
+          try {
+            const updatedTrade = {
+              exitPrice: closedTrade.exitPrice,
+              closeTime: closedTrade.closeTime,
+              status: closedTrade.status,
+              pnl: closedTrade.pnl,
+              closeReason: closedTrade.closeReason
+            };
+            
+            await supabaseOperations.updateTrade(tradeId, updatedTrade);
+            await supabaseOperations.saveLog('SUCCESS', `Trade closed: ${trade.type} ${trade.symbol} - ${closedTrade.closeReason}`, updatedTrade);
+          } catch (error) {
+            console.error('Error updating trade in Supabase:', error);
+            addLog(`❌ Error updating trade in database: ${error.message}`);
+          }
+        };
+        updateTrade();
         
         const pnlEmoji = pnl > 0 ? '💰' : '📉';
         addLog(`${pnlEmoji} TESTNET Trade ditutup: ${trade.type} ${trade.symbol} 
@@ -1093,21 +1155,23 @@ const ProfessionalTradingBot = () => {
     };
   }, [botStatus, symbol, timeframe]);
 
-  // Kalkulasi statistik performa
-  const calculatePerformance = () => {
+  // Kalkulasi statistik performa dengan Supabase integration
+  const calculatePerformance = async () => {
     const closedTrades = trades.filter(t => t.status === 'CLOSED');
-    if (closedTrades.length === 0) return;
     
+    // Always calculate even with 0 trades to prevent N/A
     const winningTrades = closedTrades.filter(t => t.pnl > 0);
     const losingTrades = closedTrades.filter(t => t.pnl < 0);
     
-    // Use simulator's actual win/loss counts for accurate WR
+    // Use simulator's actual win/loss counts for accurate WR, default to 0 if no trades
     const actualWinRate = testnetSimulator.getCurrentWinRate();
-    const winRate = actualWinRate > 0 ? actualWinRate : (winningTrades.length / closedTrades.length) * 100;
+    const winRate = closedTrades.length > 0 ? 
+      (actualWinRate > 0 ? actualWinRate : (winningTrades.length / closedTrades.length) * 100) 
+      : 0;
     
     const avgWin = winningTrades.length > 0 ? winningTrades.reduce((sum, t) => sum + t.pnl, 0) / winningTrades.length : 0;
     const avgLoss = losingTrades.length > 0 ? losingTrades.reduce((sum, t) => sum + t.pnl, 0) / losingTrades.length : 0;
-    const expectancy = (winRate/100 * avgWin) - ((100-winRate)/100 * Math.abs(avgLoss));
+    const expectancy = closedTrades.length > 0 ? (winRate/100 * avgWin) - ((100-winRate)/100 * Math.abs(avgLoss)) : 0;
     
     const stats = {
       totalTrades: closedTrades.length,
@@ -1118,10 +1182,12 @@ const ProfessionalTradingBot = () => {
       avgLoss: parseFloat(avgLoss.toFixed(2)),
       expectancy: parseFloat(expectancy.toFixed(2)),
       netProfit: closedTrades.reduce((sum, t) => sum + t.pnl, 0),
-      bestTrade: Math.max(...closedTrades.map(t => t.pnl), 0),
-      worstTrade: Math.min(...closedTrades.map(t => t.pnl), 0),
+      bestTrade: closedTrades.length > 0 ? Math.max(...closedTrades.map(t => t.pnl), 0) : 0,
+      worstTrade: closedTrades.length > 0 ? Math.min(...closedTrades.map(t => t.pnl), 0) : 0,
       maxDrawdown: 0,
-      consecutiveLosses: testnetSimulator.consecutiveLosses
+      consecutiveLosses: testnetSimulator.consecutiveLosses,
+      balanceUSDT: balance.USDT,
+      balanceBTC: balance.BTC
     };
     
     // Hitung drawdown
@@ -1129,17 +1195,27 @@ const ProfessionalTradingBot = () => {
     let peak = 10000;
     let maxDD = 0;
     
-    closedTrades.sort((a, b) => a.closeTime - b.closeTime).forEach(trade => {
-      equity += trade.pnl;
-      if (equity > peak) peak = equity;
-      
-      const drawdown = ((peak - equity) / peak) * 100;
-      if (drawdown > maxDD) maxDD = drawdown;
-    });
+    if (closedTrades.length > 0) {
+      closedTrades.sort((a, b) => a.closeTime - b.closeTime).forEach(trade => {
+        equity += trade.pnl;
+        if (equity > peak) peak = equity;
+        
+        const drawdown = ((peak - equity) / peak) * 100;
+        if (drawdown > maxDD) maxDD = drawdown;
+      });
+    }
     
     stats.maxDrawdown = parseFloat(maxDD.toFixed(2));
     
     setPerformanceStats(stats);
+    
+    // Save performance snapshot to Supabase
+    try {
+      await supabaseOperations.savePerformanceSnapshot(stats);
+      await supabaseOperations.saveBalanceSnapshot(balance.USDT, balance.BTC, balance.USDT + (balance.BTC * (candles[candles.length - 1]?.close || 0)));
+    } catch (error) {
+      console.error('Error saving performance to Supabase:', error);
+    }
   };
 
   // Render chart
@@ -1304,19 +1380,67 @@ const ProfessionalTradingBot = () => {
     addLog("🆕 Sesi testnet baru dimulai");
   };
 
+  // Start bot with WinRate service
+  const startBot = async () => {
+    setBotStatus('running');
+    addLog("🚀 TESTNET Trading Bot dimulai");
+    
+    try {
+      winRateService.start();
+      addLog("✅ WinRate service started - calculating every 5 minutes");
+    } catch (error) {
+      console.error('Error starting WinRate service:', error);
+      addLog(`❌ Error starting WinRate service: ${error.message}`);
+    }
+  };
+
+  // Stop bot with WinRate service
+  const stopBot = async () => {
+    setBotStatus('stopped');
+    addLog("🛑 TESTNET Trading Bot dihentikan");
+    
+    try {
+      await winRateService.stop();
+      addLog("✅ WinRate service stopped and final calculation completed");
+    } catch (error) {
+      console.error('Error stopping WinRate service:', error);
+      addLog(`❌ Error stopping WinRate service: ${error.message}`);
+    }
+  };
+
+  // Show loading spinner if checking auth
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-gray-900 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto"></div>
+          <p className="mt-2 text-gray-400">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Redirect to login if not authenticated
+  if (!isAuthenticated) {
+    return null;
+  }
+
   return (
     <div className="min-h-screen bg-gray-900 text-gray-100">
       {/* Header */}
       <header className="bg-gray-800 border-b border-gray-700 px-2 sm:px-4 py-3">
         <div className="max-w-7xl mx-auto flex justify-between items-center">
           <div className="flex items-center space-x-2">
-            <FaChartLine className="text-blue-500 text-xl sm:text-2xl" />
-            <h1 className="text-lg sm:text-xl font-bold">ProTrade Bot</h1>
+            <FaShieldAlt className="text-blue-500 text-xl sm:text-2xl" />
+            <h1 className="text-lg sm:text-xl font-bold">Airo Hunter Trading Bot</h1>
             <span className="text-xs bg-blue-900 text-blue-200 px-2 py-1 rounded font-bold">
               TESTNET MODE
             </span>
             <span className="text-xs bg-green-900 text-green-200 px-2 py-1 rounded hidden sm:block">
-              WR: {performanceStats ? `${performanceStats.winRate}%` : 'N/A'}
+              WR: {performanceStats ? `${performanceStats.winRate}%` : '0.00%'}
+            </span>
+            <span className="text-xs text-gray-400 hidden lg:block">
+              by {process.env.NEXT_PUBLIC_SECURITY_BRAND || 'Airo Hunter Security'}
             </span>
           </div>
           
@@ -1329,7 +1453,7 @@ const ProfessionalTradingBot = () => {
             </div>
             <div className="flex space-x-1 sm:space-x-2">
               <button 
-                onClick={() => setBotStatus('running')}
+                onClick={startBot}
                 disabled={botStatus === 'running'}
                 className={`px-2 py-1 sm:px-3 sm:py-1 rounded flex items-center text-xs sm:text-sm ${
                   botStatus === 'running' 
@@ -1341,7 +1465,7 @@ const ProfessionalTradingBot = () => {
                 <span className="hidden sm:inline">Start</span>
               </button>
               <button 
-                onClick={() => setBotStatus('stopped')}
+                onClick={stopBot}
                 disabled={botStatus === 'stopped'}
                 className={`px-2 py-1 sm:px-3 sm:py-1 rounded flex items-center text-xs sm:text-sm ${
                   botStatus === 'stopped' 
@@ -1365,6 +1489,14 @@ const ProfessionalTradingBot = () => {
               >
                 <FaRedo className="mr-0 sm:mr-1" />
                 <span className="hidden sm:inline">Reset Testnet</span>
+              </button>
+              <button
+                onClick={handleLogout}
+                className="px-2 py-1 sm:px-3 sm:py-1 rounded flex items-center bg-gray-600 hover:bg-gray-700 text-xs sm:text-sm"
+                title="Logout"
+              >
+                <FaSignOutAlt className="mr-0 sm:mr-1" /> 
+                <span className="hidden sm:inline">Logout</span>
               </button>
             </div>
           </div>
