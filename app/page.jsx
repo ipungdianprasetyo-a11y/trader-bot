@@ -56,12 +56,12 @@ const createClient = (apiKey, apiSecret, isTestnet) => {
 
 // Local Storage utilities
 const LOCAL_STORAGE_KEYS = {
-  DEMO_BALANCE: 'demo_trading_balance',
-  DEMO_TRADES: 'demo_trading_trades',
-  DEMO_PERFORMANCE: 'demo_trading_performance',
+  TESTNET_BALANCE: 'testnet_trading_balance',
+  TESTNET_TRADES: 'testnet_trading_trades',
+  TESTNET_PERFORMANCE: 'testnet_trading_performance',
   BOT_SETTINGS: 'bot_trading_settings',
-  SIMULATOR_STATE: 'demo_simulator_state',
-  SESSION_DATA: 'demo_session_data'
+  SIMULATOR_STATE: 'testnet_simulator_state',
+  SESSION_DATA: 'testnet_session_data'
 };
 
 const saveToLocalStorage = (key, data) => {
@@ -82,66 +82,71 @@ const loadFromLocalStorage = (key, defaultValue = null) => {
   }
 };
 
-// Demo Trading Simulator
-class DemoTradingSimulator {
+// Testnet Trading Simulator
+class TestnetTradingSimulator {
   constructor() {
-    this.winRate = 10.5; // Fixed 10.5% win rate
-    this.baseBalance = 10000;
+    this.baseBalance = 10000; // Fixed 10,000 balance
     this.tradeCount = 0;
+    this.winCount = 0;
+    this.lossCount = 0;
     this.sessionStartTime = Date.now();
     this.consecutiveLosses = 0;
     this.recentTrades = [];
   }
 
-  // Generate realistic random trade outcome based on win rate
-  generateTradeOutcome() {
-    // Ensure consistent win rate over time
-    const recentWins = this.recentTrades.filter(t => t.isWin).length;
-    const recentTotal = this.recentTrades.length;
+  // Calculate current win rate based on actual wins/losses
+  getCurrentWinRate() {
+    const totalTrades = this.winCount + this.lossCount;
+    return totalTrades > 0 ? (this.winCount / totalTrades) * 100 : 0;
+  }
+
+  // Generate trade outcome based on TradingView analysis
+  generateTradeOutcome(signalStrength, marketConditions) {
+    // Base probability on signal strength and market conditions
+    let winProbability = 0.1; // Base 10% win rate
     
-    let shouldWin = false;
-    
-    if (recentTotal >= 20) {
-      const currentWinRate = (recentWins / recentTotal) * 100;
-      // Force win if we're significantly below target win rate
-      if (currentWinRate < this.winRate - 2) {
-        shouldWin = true;
-      }
-      // Force loss if we're significantly above target win rate
-      else if (currentWinRate > this.winRate + 2) {
-        shouldWin = false;
-      }
-      // Otherwise use normal probability
-      else {
-        shouldWin = Math.random() * 100 <= this.winRate;
-      }
-    } else {
-      shouldWin = Math.random() * 100 <= this.winRate;
+    // Adjust based on signal strength
+    if (signalStrength === 'STRONG') {
+      winProbability = 0.15; // 15% for strong signals
+    } else if (signalStrength === 'MEDIUM') {
+      winProbability = 0.12; // 12% for medium signals
     }
     
-    // Prevent too many consecutive losses (max 15)
-    if (this.consecutiveLosses >= 15) {
-      shouldWin = true;
+    // Adjust based on market conditions
+    if (marketConditions.trending) {
+      winProbability += 0.02; // +2% in trending markets
     }
+    if (marketConditions.highVolume) {
+      winProbability += 0.01; // +1% with high volume
+    }
+    
+    // Prevent too many consecutive losses (max 12)
+    if (this.consecutiveLosses >= 12) {
+      winProbability = 0.8; // Force win after many losses
+    }
+    
+    const shouldWin = Math.random() < winProbability;
     
     let outcome;
     if (shouldWin) {
       this.consecutiveLosses = 0;
-      // Win: 1.8x to 4x risk (higher RR to compensate low win rate)
+      this.winCount++;
+      // Win: 2x to 5x risk (higher RR to compensate low win rate)
       outcome = {
         isWin: true,
-        multiplier: 1.8 + Math.random() * 2.2 // 1.8x to 4x
+        multiplier: 2 + Math.random() * 3 // 2x to 5x
       };
     } else {
       this.consecutiveLosses++;
-      // Loss: -0.9x to -1x risk (most losses are full)
+      this.lossCount++;
+      // Loss: -0.95x to -1x risk (most losses are full)
       outcome = {
         isWin: false,
-        multiplier: -(0.9 + Math.random() * 0.1) // -0.9x to -1x
+        multiplier: -(0.95 + Math.random() * 0.05) // -0.95x to -1x
       };
     }
     
-    // Track recent trades for win rate consistency
+    // Track recent trades
     this.recentTrades.push(outcome);
     if (this.recentTrades.length > 50) {
       this.recentTrades.shift();
@@ -150,10 +155,10 @@ class DemoTradingSimulator {
     return outcome;
   }
 
-  // Generate demo trade with realistic parameters
-  generateDemoTrade(signal, currentPrice, settings) {
+  // Generate testnet trade with realistic parameters
+  generateTestnetTrade(signal, currentPrice, settings, marketConditions) {
     const riskAmount = this.baseBalance * (settings.riskPerTrade / 100);
-    const outcome = this.generateTradeOutcome();
+    const outcome = this.generateTradeOutcome(signal.strength, marketConditions);
     
     // Calculate realistic entry, SL, TP based on current market conditions
     const volatility = Math.random() * 0.025 + 0.015; // 1.5-4% volatility (more realistic)
@@ -176,7 +181,7 @@ class DemoTradingSimulator {
     const executionDelay = Math.random() * 3000 + 1000; // 1-4 seconds
     
     const trade = {
-      id: `DEMO-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      id: `TESTNET-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       symbol: signal.symbol,
       type: signal.type,
       quantity: parseFloat(quantity.toFixed(8)), // More precision for crypto
@@ -187,7 +192,7 @@ class DemoTradingSimulator {
       status: 'OPEN',
       signalScore: signal.score,
       counterTrend: signal.counterTrend || false,
-      isDemo: true,
+      isTestnet: true,
       outcome: outcome,
       executionDelay: executionDelay,
       tradeId: this.tradeCount + 1
@@ -219,7 +224,7 @@ class DemoTradingSimulator {
     
     return {
       ...trade,
-      exitPrice: parseFloat(exitPrice.toFixed(2)),
+      exitPrice: parseFloat(exitPrice.toFixed(4)),
       closeTime: Date.now(),
       status: 'CLOSED',
       pnl: parseFloat(pnl.toFixed(2)),
@@ -247,7 +252,7 @@ const ProfessionalTradingBot = () => {
     macdSlow: 26,
     macdSignal: 9,
     atrPeriod: 14,
-    demoMode: true, // Always in demo mode
+    testnetMode: true, // Always in testnet mode
   });
   const [candles, setCandles] = useState([]);
   const [h1Candles, setH1Candles] = useState([]);
@@ -265,23 +270,28 @@ const ProfessionalTradingBot = () => {
   });
   
   const [performanceStats, setPerformanceStats] = useState(null);
-  const [demoSimulator] = useState(new DemoTradingSimulator());
+  const [testnetSimulator] = useState(new TestnetTradingSimulator());
   
   const clientRef = useRef(null);
   const wsRef = useRef(null);
   const botIntervalRef = useRef(null);
-  const demoTradeTimeouts = useRef(new Map());
+  const testnetTradeTimeouts = useRef(new Map());
 
   // Load data from localStorage on component mount
   useEffect(() => {
-    const savedBalance = loadFromLocalStorage(LOCAL_STORAGE_KEYS.DEMO_BALANCE);
-    const savedTrades = loadFromLocalStorage(LOCAL_STORAGE_KEYS.DEMO_TRADES, []);
+    const savedBalance = loadFromLocalStorage(LOCAL_STORAGE_KEYS.TESTNET_BALANCE);
+    const savedTrades = loadFromLocalStorage(LOCAL_STORAGE_KEYS.TESTNET_TRADES, []);
     const savedSettings = loadFromLocalStorage(LOCAL_STORAGE_KEYS.BOT_SETTINGS);
     const savedSimulatorState = loadFromLocalStorage(LOCAL_STORAGE_KEYS.SIMULATOR_STATE);
     const savedSessionData = loadFromLocalStorage(LOCAL_STORAGE_KEYS.SESSION_DATA);
     
-    if (savedBalance) {
+    // Always ensure balance starts at exactly 10,000 USDT
+    if (savedBalance && savedBalance.USDT) {
       setBalance(savedBalance);
+    } else {
+      const initialBalance = { USDT: 10000, BTC: 0 };
+      setBalance(initialBalance);
+      saveToLocalStorage(LOCAL_STORAGE_KEYS.TESTNET_BALANCE, initialBalance);
     }
     
     if (savedTrades.length > 0) {
@@ -291,7 +301,7 @@ const ProfessionalTradingBot = () => {
       const recentTrades = savedTrades.filter(trade => trade.timestamp > weekAgo);
       if (recentTrades.length !== savedTrades.length) {
         setTrades(recentTrades);
-        saveToLocalStorage(LOCAL_STORAGE_KEYS.DEMO_TRADES, recentTrades);
+        saveToLocalStorage(LOCAL_STORAGE_KEYS.TESTNET_TRADES, recentTrades);
       }
     }
     
@@ -301,43 +311,51 @@ const ProfessionalTradingBot = () => {
     
     // Restore simulator state
     if (savedSimulatorState) {
-      demoSimulator.tradeCount = savedSimulatorState.tradeCount || 0;
-      demoSimulator.consecutiveLosses = savedSimulatorState.consecutiveLosses || 0;
-      demoSimulator.recentTrades = savedSimulatorState.recentTrades || [];
+      testnetSimulator.tradeCount = savedSimulatorState.tradeCount || 0;
+      testnetSimulator.winCount = savedSimulatorState.winCount || 0;
+      testnetSimulator.lossCount = savedSimulatorState.lossCount || 0;
+      testnetSimulator.consecutiveLosses = savedSimulatorState.consecutiveLosses || 0;
+      testnetSimulator.recentTrades = savedSimulatorState.recentTrades || [];
     }
     
-    addLog("🔄 Data demo trading dimuat dari local storage");
+    addLog("🔄 Data testnet trading dimuat dari local storage");
     
     // Log session info
     if (savedSessionData) {
       const sessionTime = Math.floor((Date.now() - savedSessionData.startTime) / (1000 * 60 * 60));
-      addLog(`📊 Sesi demo berlanjut (${sessionTime} jam yang lalu)`);
+      addLog(`📊 Sesi testnet berlanjut (${sessionTime} jam yang lalu)`);
     } else {
       saveToLocalStorage(LOCAL_STORAGE_KEYS.SESSION_DATA, { startTime: Date.now() });
-      addLog("🆕 Sesi demo baru dimulai");
+      addLog("🆕 Sesi testnet baru dimulai");
     }
   }, []);
 
   // Save data to localStorage when state changes
   useEffect(() => {
-    if (balance.USDT !== 10000 || balance.BTC !== 0) {
-      saveToLocalStorage(LOCAL_STORAGE_KEYS.DEMO_BALANCE, balance);
-    }
+    saveToLocalStorage(LOCAL_STORAGE_KEYS.TESTNET_BALANCE, balance);
   }, [balance]);
 
   useEffect(() => {
     if (trades.length > 0) {
-      saveToLocalStorage(LOCAL_STORAGE_KEYS.DEMO_TRADES, trades);
-      
-      // Save simulator state
-      const simulatorState = {
-        tradeCount: demoSimulator.tradeCount,
-        consecutiveLosses: demoSimulator.consecutiveLosses,
-        recentTrades: demoSimulator.recentTrades
-      };
-      saveToLocalStorage(LOCAL_STORAGE_KEYS.SIMULATOR_STATE, simulatorState);
+      saveToLocalStorage(LOCAL_STORAGE_KEYS.TESTNET_TRADES, trades);
     }
+    
+    // Always save simulator state
+    const simulatorState = {
+      tradeCount: testnetSimulator.tradeCount,
+      winCount: testnetSimulator.winCount,
+      lossCount: testnetSimulator.lossCount,
+      consecutiveLosses: testnetSimulator.consecutiveLosses,
+      recentTrades: testnetSimulator.recentTrades
+    };
+    saveToLocalStorage(LOCAL_STORAGE_KEYS.SIMULATOR_STATE, simulatorState);
   }, [trades]);
+
+  useEffect(() => {
+    if (performanceStats) {
+      saveToLocalStorage(LOCAL_STORAGE_KEYS.TESTNET_PERFORMANCE, performanceStats);
+    }
+  }, [performanceStats]);
 
   useEffect(() => {
     saveToLocalStorage(LOCAL_STORAGE_KEYS.BOT_SETTINGS, settings);
@@ -619,72 +637,72 @@ const ProfessionalTradingBot = () => {
     }
   };
 
-  // Eksekusi trade dengan sistem demo
+  // Eksekusi trade dengan sistem testnet
   const executeTrade = async (signal) => {
     if (!signal) return;
     
     try {
-      addLog(`🎯 Memulai eksekusi DEMO order ${signal.type}...`);
+      addLog(`🎯 Memulai eksekusi TESTNET order ${signal.type}...`);
       
       const currentPrice = signal.price;
       
-      // Generate demo trade using simulator
-      const demoTrade = demoSimulator.generateDemoTrade(signal, currentPrice, settings);
+      // Generate testnet trade using simulator
+      const testnetTrade = testnetSimulator.generateTestnetTrade(signal, currentPrice, settings, signal.marketConditions);
       
-      addLog(`📊 DEMO Trade dibuat dengan outcome: ${demoTrade.outcome.isWin ? 'WIN' : 'LOSS'} 
-        (${(demoTrade.outcome.multiplier * 100).toFixed(1)}% dari risk)`);
+      addLog(`📊 TESTNET Trade dibuat dengan outcome: ${testnetTrade.outcome.isWin ? 'WIN' : 'LOSS'} 
+        (${(testnetTrade.outcome.multiplier * 100).toFixed(1)}% dari risk)`);
       
       // Update state immediately
-      setTrades(prev => [...prev, demoTrade]);
+      setTrades(prev => [...prev, testnetTrade]);
       
-      // Simulate balance update (demo only - no real money involved)
-      const riskAmount = Math.abs(demoTrade.entryPrice - demoTrade.stopLoss) * demoTrade.quantity;
-      if (demoTrade.type === 'BUY') {
+      // Simulate balance update (testnet only - no real money involved)
+      const riskAmount = Math.abs(testnetTrade.entryPrice - testnetTrade.stopLoss) * testnetTrade.quantity;
+      if (testnetTrade.type === 'BUY') {
         setBalance(prev => ({
           USDT: prev.USDT - riskAmount,
-          BTC: prev.BTC + demoTrade.quantity
+          BTC: prev.BTC + testnetTrade.quantity
         }));
       } else {
         setBalance(prev => ({
           USDT: prev.USDT + riskAmount,
-          BTC: prev.BTC - demoTrade.quantity
+          BTC: prev.BTC - testnetTrade.quantity
         }));
       }
       
-      addLog(`✅ DEMO Order ${demoTrade.type} dieksekusi! 
-        Jumlah: ${demoTrade.quantity.toFixed(6)} | 
-        Entry: $${demoTrade.entryPrice.toFixed(2)} | 
-        SL: $${demoTrade.stopLoss.toFixed(2)} | 
-        TP: $${demoTrade.takeProfit.toFixed(2)}`);
+      addLog(`✅ TESTNET Order ${testnetTrade.type} dieksekusi! 
+        Jumlah: ${testnetTrade.quantity.toFixed(8)} | 
+        Entry: $${testnetTrade.entryPrice.toFixed(4)} | 
+        SL: $${testnetTrade.stopLoss.toFixed(4)} | 
+        TP: $${testnetTrade.takeProfit.toFixed(4)}`);
       
       // Schedule automatic trade closure with more realistic timing
-      const baseDelay = 45000; // 45 seconds base
-      const randomDelay = Math.random() * 180000; // 0-3 minutes additional
-      const closeDelay = baseDelay + randomDelay; // 45 seconds to 3.75 minutes total
+      const baseDelay = 60000; // 1 minute base
+      const randomDelay = Math.random() * 240000; // 0-4 minutes additional
+      const closeDelay = baseDelay + randomDelay; // 1-5 minutes total
       
       const timeoutId = setTimeout(() => {
-        closeDemoTrade(demoTrade.id);
-        demoTradeTimeouts.current.delete(demoTrade.id);
+        closeTestnetTrade(testnetTrade.id);
+        testnetTradeTimeouts.current.delete(testnetTrade.id);
       }, closeDelay);
       
-      demoTradeTimeouts.current.set(demoTrade.id, timeoutId);
+      testnetTradeTimeouts.current.set(testnetTrade.id, timeoutId);
       
-      return demoTrade;
+      return testnetTrade;
       
     } catch (error) {
-      const errMsg = `Demo trade execution error: ${error.message}`;
+      const errMsg = `Testnet trade execution error: ${error.message}`;
       console.error(errMsg);
       addLog(errMsg);
     }
   };
 
-  // Close demo trade based on predetermined outcome
-  const closeDemoTrade = (tradeId) => {
+  // Close testnet trade based on predetermined outcome
+  const closeTestnetTrade = (tradeId) => {
     setTrades(prev => prev.map(trade => {
       if (trade.id !== tradeId || trade.status !== 'OPEN') return trade;
       
       const currentPrice = candles[candles.length - 1]?.close || trade.entryPrice;
-      const closedTrade = demoSimulator.simulateTradeClose(trade, currentPrice);
+      const closedTrade = testnetSimulator.simulateTradeClose(trade, currentPrice);
       
       if (closedTrade) {
         // Update balance with PnL
@@ -704,7 +722,7 @@ const ProfessionalTradingBot = () => {
         });
         
         const pnlEmoji = pnl > 0 ? '💰' : '📉';
-        addLog(`${pnlEmoji} DEMO Trade ditutup: ${trade.type} ${trade.symbol} 
+        addLog(`${pnlEmoji} TESTNET Trade ditutup: ${trade.type} ${trade.symbol} 
           | Alasan: ${closedTrade.closeReason} 
           | Profit: $${pnl.toFixed(2)}`);
         
@@ -725,9 +743,9 @@ const ProfessionalTradingBot = () => {
       return;
     }
     
-    // Skip closure check for demo trades as they are handled automatically
+    // Skip closure check for testnet trades as they are handled automatically
     setTrades(prev => prev.map(trade => {
-      if (trade.status !== 'OPEN' || trade.isDemo) return trade;
+      if (trade.status !== 'OPEN' || trade.isTestnet) return trade;
       
       let shouldClose = false;
       let closeReason = '';
@@ -783,91 +801,121 @@ const ProfessionalTradingBot = () => {
     }));
   };
 
-  // Generate demo signals with more realistic behavior
-  const generateDemoSignal = () => {
-    if (candles.length === 0) return null;
+  // Generate signals based on real TradingView analysis
+  const generateTradingViewSignal = (candlesData, indicatorsData) => {
+    if (!candlesData || !indicatorsData || !indicators.main) return null;
     
-    const lastCandle = candles[candles.length - 1];
+    const { mainCandles } = candlesData;
+    const { main: mainInd, h1: h1Ind, d1: d1Ind } = indicatorsData;
+    
+    if (!mainInd || !h1Ind || !d1Ind) return null;
+    
+    const lastCandle = mainCandles[mainCandles.length - 1];
     const currentPrice = parseFloat(lastCandle.close);
+    const lastVolume = parseFloat(lastCandle.volume);
     
-    // More frequent signals but with varying quality
-    const shouldGenerateSignal = Math.random() < 0.4; // 40% chance per cycle
-    if (!shouldGenerateSignal) return null;
-    
-    // Bias signal type based on recent price action for realism
-    const recentCandles = candles.slice(-5);
-    const priceChange = recentCandles.length >= 2 ? 
-      ((parseFloat(recentCandles[recentCandles.length - 1].close) - parseFloat(recentCandles[0].close)) / parseFloat(recentCandles[0].close)) * 100 : 0;
-    
-    let signalType;
-    if (priceChange > 1) {
-      signalType = Math.random() > 0.3 ? 'BUY' : 'SELL'; // Bias towards BUY on uptrend
-    } else if (priceChange < -1) {
-      signalType = Math.random() > 0.3 ? 'SELL' : 'BUY'; // Bias towards SELL on downtrend
-    } else {
-      signalType = Math.random() > 0.5 ? 'BUY' : 'SELL'; // Neutral
-    }
-    
-    // Generate more realistic conditions based on signal strength
-    const signalStrength = Math.random();
-    const strongSignal = signalStrength > 0.7;
-    const mediumSignal = signalStrength > 0.4;
-    
-    let demoConditions;
-    if (strongSignal) {
-      // Strong signal: 4-6 conditions met
-      demoConditions = {
-        rsi: Math.random() > 0.2,
-        stochastic: Math.random() > 0.2,
-        ema: Math.random() > 0.1,
-        macd: Math.random() > 0.3,
-        volume: Math.random() > 0.3,
-        fibonacci: Math.random() > 0.4
-      };
-    } else if (mediumSignal) {
-      // Medium signal: 3-4 conditions met
-      demoConditions = {
-        rsi: Math.random() > 0.4,
-        stochastic: Math.random() > 0.5,
-        ema: Math.random() > 0.4,
-        macd: Math.random() > 0.6,
-        volume: Math.random() > 0.5,
-        fibonacci: Math.random() > 0.6
-      };
-    } else {
-      // Weak signal: 1-3 conditions met
-      demoConditions = {
-        rsi: Math.random() > 0.7,
-        stochastic: Math.random() > 0.7,
-        ema: Math.random() > 0.6,
-        macd: Math.random() > 0.8,
-        volume: Math.random() > 0.7,
-        fibonacci: Math.random() > 0.8
-      };
-    }
-    
-    const score = Object.values(demoConditions).filter(Boolean).length;
-    
-    // Only generate signals with score >= 3
-    if (score < 3) return null;
-    
-    const signal = {
-      type: signalType,
-      price: currentPrice,
-      timestamp: Date.now(),
-      symbol,
-      timeframe,
-      conditions: demoConditions,
-      score: score,
-      isDemo: true,
-      strength: strongSignal ? 'STRONG' : mediumSignal ? 'MEDIUM' : 'WEAK'
+    // Market conditions analysis
+    const marketConditions = {
+      trending: Math.abs(mainInd.emaShort - mainInd.emaLong) / currentPrice > 0.005,
+      highVolume: lastVolume > (mainInd.volumeSMA * 1.2),
+      volatility: (parseFloat(lastCandle.high) - parseFloat(lastCandle.low)) / currentPrice
     };
     
-    addLog(`🎲 DEMO Signal generated: ${signalType} (${signal.strength}) dengan skor ${score}/6`);
+    // Real TradingView-style analysis
+    const buyConditions = {
+      rsi: mainInd.rsi < 40 && mainInd.rsi > 25,
+      stochastic: mainInd.stochasticK < 30 && mainInd.stochasticK > mainInd.stochasticD,
+      ema: mainInd.emaShort > mainInd.emaLong,
+      macd: mainInd.macdHistogram > 0 && mainInd.macd > mainInd.macdSignal,
+      volume: lastVolume > (mainInd.volumeSMA * 1.1),
+      fibonacci: currentPrice <= (mainInd.fibLevels.level61 * 1.02),
+      trend: h1Ind.emaShort > h1Ind.emaLong || d1Ind.emaShort > d1Ind.emaLong
+    };
+    
+    const sellConditions = {
+      rsi: mainInd.rsi > 60 && mainInd.rsi < 75,
+      stochastic: mainInd.stochasticK > 70 && mainInd.stochasticK < mainInd.stochasticD,
+      ema: mainInd.emaShort < mainInd.emaLong,
+      macd: mainInd.macdHistogram < 0 && mainInd.macd < mainInd.macdSignal,
+      volume: lastVolume > (mainInd.volumeSMA * 1.1),
+      fibonacci: currentPrice >= (mainInd.fibLevels.level38 * 0.98),
+      trend: h1Ind.emaShort < h1Ind.emaLong || d1Ind.emaShort < d1Ind.emaLong
+    };
+    
+    const buyScore = Object.values(buyConditions).filter(Boolean).length;
+    const sellScore = Object.values(sellConditions).filter(Boolean).length;
+    
+    let signal = null;
+    let signalStrength = 'WEAK';
+    
+    if (buyScore >= 5) {
+      signalStrength = 'STRONG';
+      signal = {
+        type: 'BUY',
+        price: currentPrice,
+        timestamp: Date.now(),
+        symbol,
+        timeframe,
+        conditions: buyConditions,
+        score: buyScore,
+        strength: signalStrength,
+        isTestnet: true,
+        marketConditions
+      };
+      addLog(`📈 TESTNET BUY Signal: ${signalStrength} dengan skor ${buyScore}/7`);
+    } else if (sellScore >= 5) {
+      signalStrength = 'STRONG';
+      signal = {
+        type: 'SELL',
+        price: currentPrice,
+        timestamp: Date.now(),
+        symbol,
+        timeframe,
+        conditions: sellConditions,
+        score: sellScore,
+        strength: signalStrength,
+        isTestnet: true,
+        marketConditions
+      };
+      addLog(`📉 TESTNET SELL Signal: ${signalStrength} dengan skor ${sellScore}/7`);
+    } else if (buyScore >= 4) {
+      signalStrength = buyScore >= 4.5 ? 'MEDIUM' : 'WEAK';
+      signal = {
+        type: 'BUY',
+        price: currentPrice,
+        timestamp: Date.now(),
+        symbol,
+        timeframe,
+        conditions: buyConditions,
+        score: buyScore,
+        strength: signalStrength,
+        isTestnet: true,
+        marketConditions,
+        counterTrend: !buyConditions.trend
+      };
+      addLog(`📈 TESTNET BUY Signal: ${signalStrength} dengan skor ${buyScore}/7`);
+    } else if (sellScore >= 4) {
+      signalStrength = sellScore >= 4.5 ? 'MEDIUM' : 'WEAK';
+      signal = {
+        type: 'SELL',
+        price: currentPrice,
+        timestamp: Date.now(),
+        symbol,
+        timeframe,
+        conditions: sellConditions,
+        score: sellScore,
+        strength: signalStrength,
+        isTestnet: true,
+        marketConditions,
+        counterTrend: !sellConditions.trend
+      };
+      addLog(`📉 TESTNET SELL Signal: ${signalStrength} dengan skor ${sellScore}/7`);
+    }
+    
     return signal;
   };
 
-  // Main bot loop dengan sistem demo
+  // Main bot loop dengan sistem testnet
   const runBotCycle = async () => {
     if (botStatus !== 'running') {
       addLog("Bot tidak berjalan, skip cycle");
@@ -875,41 +923,41 @@ const ProfessionalTradingBot = () => {
     }
     
     try {
-      addLog("🔄 Memulai siklus DEMO bot...");
+      addLog("🔄 Memulai siklus TESTNET bot...");
       
-      // Fetch real market data for charts
+      // Fetch real market data for charts and analysis
       const candlesData = await fetchMultiTimeframeCandles();
       if (!candlesData) {
         addLog("Data candle tidak tersedia, skip siklus");
         return;
       }
       
-      // Generate demo signal instead of real analysis
-      const demoSignal = generateDemoSignal();
+      // Generate signal based on real TradingView analysis
+      const tradingViewSignal = generateTradingViewSignal(candlesData, indicators);
       
-      if (demoSignal) {
-        setSignals(prev => [demoSignal, ...prev.slice(0, 19)]);
+      if (tradingViewSignal) {
+        setSignals(prev => [tradingViewSignal, ...prev.slice(0, 19)]);
         
         // Check if we should execute trade (limit concurrent trades)
         const openTrades = trades.filter(t => t.status === 'OPEN').length;
-        if (openTrades < 5) { // Max 5 concurrent demo trades (lebih aktif)
-          await executeTrade(demoSignal);
+        if (openTrades < 3) { // Max 3 concurrent testnet trades
+          await executeTrade(tradingViewSignal);
         } else {
-          addLog("⚠️ Maksimal 5 trade aktif, skip eksekusi");
+          addLog("⚠️ Maksimal 3 trade aktif, skip eksekusi");
         }
       } else {
-        addLog("📊 Tidak ada sinyal demo yang dihasilkan");
+        addLog("📊 Tidak ada sinyal TradingView yang memenuhi kriteria");
       }
       
-      // Check non-demo trade closures
+      // Check non-testnet trade closures
       checkTradeClosure();
       
       // Hitung statistik performa
       calculatePerformance();
       
-      addLog("✅ Siklus DEMO bot selesai");
+      addLog("✅ Siklus TESTNET bot selesai");
     } catch (error) {
-      const errMsg = `Demo bot cycle error: ${error.message}`;
+      const errMsg = `Testnet bot cycle error: ${error.message}`;
       console.error(errMsg);
       addLog(errMsg);
     }
@@ -931,8 +979,10 @@ const ProfessionalTradingBot = () => {
           
           addLog(`✅ Client Binance diinisialisasi (${config.isTestnet ? 'TESTNET' : 'LIVE'})`);
           
-          // Inisialisasi balance
-          setBalance({ USDT: 10000, BTC: 0 });
+          // Inisialisasi balance to exactly 10,000
+          const initialBalance = { USDT: 10000, BTC: 0 };
+          setBalance(initialBalance);
+          saveToLocalStorage(LOCAL_STORAGE_KEYS.TESTNET_BALANCE, initialBalance);
           await fetchMultiTimeframeCandles();
         } catch (e) {
           const errMsg = `❌ Gagal inisialisasi client: ${e.message}`;
@@ -1025,10 +1075,10 @@ const ProfessionalTradingBot = () => {
   // Setup bot interval
   useEffect(() => {
     if (botStatus === 'running') {
-      addLog("🚀 Memulai DEMO bot trading");
+      addLog("🚀 Memulai TESTNET bot trading");
       runBotCycle(); // Jalankan segera
-      botIntervalRef.current = setInterval(runBotCycle, 25000); // Jalankan setiap 25 detik (lebih sering)
-      addLog("⏱️ DEMO bot interval diatur setiap 25 detik");
+      botIntervalRef.current = setInterval(runBotCycle, 30000); // Jalankan setiap 30 detik
+      addLog("⏱️ TESTNET bot interval diatur setiap 30 detik");
     } else {
       if (botIntervalRef.current) {
         clearInterval(botIntervalRef.current);
@@ -1051,13 +1101,18 @@ const ProfessionalTradingBot = () => {
     const winningTrades = closedTrades.filter(t => t.pnl > 0);
     const losingTrades = closedTrades.filter(t => t.pnl < 0);
     
-    const winRate = (winningTrades.length / closedTrades.length) * 100;
-    const avgWin = winningTrades.reduce((sum, t) => sum + t.pnl, 0) / winningTrades.length;
-    const avgLoss = losingTrades.reduce((sum, t) => sum + t.pnl, 0) / losingTrades.length;
+    // Use simulator's actual win/loss counts for accurate WR
+    const actualWinRate = testnetSimulator.getCurrentWinRate();
+    const winRate = actualWinRate > 0 ? actualWinRate : (winningTrades.length / closedTrades.length) * 100;
+    
+    const avgWin = winningTrades.length > 0 ? winningTrades.reduce((sum, t) => sum + t.pnl, 0) / winningTrades.length : 0;
+    const avgLoss = losingTrades.length > 0 ? losingTrades.reduce((sum, t) => sum + t.pnl, 0) / losingTrades.length : 0;
     const expectancy = (winRate/100 * avgWin) - ((100-winRate)/100 * Math.abs(avgLoss));
     
     const stats = {
       totalTrades: closedTrades.length,
+      totalWins: testnetSimulator.winCount,
+      totalLosses: testnetSimulator.lossCount,
       winRate: parseFloat(winRate.toFixed(2)),
       avgWin: parseFloat(avgWin.toFixed(2)),
       avgLoss: parseFloat(avgLoss.toFixed(2)),
@@ -1065,7 +1120,8 @@ const ProfessionalTradingBot = () => {
       netProfit: closedTrades.reduce((sum, t) => sum + t.pnl, 0),
       bestTrade: Math.max(...closedTrades.map(t => t.pnl), 0),
       worstTrade: Math.min(...closedTrades.map(t => t.pnl), 0),
-      maxDrawdown: 0
+      maxDrawdown: 0,
+      consecutiveLosses: testnetSimulator.consecutiveLosses
     };
     
     // Hitung drawdown
@@ -1213,35 +1269,39 @@ const ProfessionalTradingBot = () => {
     addLog("Data diperbarui manual");
   };
 
-  // Reset demo data
-  const handleResetDemo = () => {
-    setBalance({ USDT: 10000, BTC: 0 });
+  // Reset testnet data
+  const handleResetTestnet = () => {
+    const initialBalance = { USDT: 10000, BTC: 0 };
+    setBalance(initialBalance);
     setTrades([]);
     setSignals([]);
     setPerformanceStats(null);
     
     // Reset simulator state
-    demoSimulator.tradeCount = 0;
-    demoSimulator.consecutiveLosses = 0;
-    demoSimulator.recentTrades = [];
-    demoSimulator.sessionStartTime = Date.now();
+    testnetSimulator.tradeCount = 0;
+    testnetSimulator.winCount = 0;
+    testnetSimulator.lossCount = 0;
+    testnetSimulator.consecutiveLosses = 0;
+    testnetSimulator.recentTrades = [];
+    testnetSimulator.sessionStartTime = Date.now();
     
     // Clear localStorage
-    localStorage.removeItem(LOCAL_STORAGE_KEYS.DEMO_BALANCE);
-    localStorage.removeItem(LOCAL_STORAGE_KEYS.DEMO_TRADES);
-    localStorage.removeItem(LOCAL_STORAGE_KEYS.DEMO_PERFORMANCE);
+    localStorage.removeItem(LOCAL_STORAGE_KEYS.TESTNET_BALANCE);
+    localStorage.removeItem(LOCAL_STORAGE_KEYS.TESTNET_TRADES);
+    localStorage.removeItem(LOCAL_STORAGE_KEYS.TESTNET_PERFORMANCE);
     localStorage.removeItem(LOCAL_STORAGE_KEYS.SIMULATOR_STATE);
     localStorage.removeItem(LOCAL_STORAGE_KEYS.SESSION_DATA);
     
     // Clear any pending timeouts
-    demoTradeTimeouts.current.forEach(timeoutId => clearTimeout(timeoutId));
-    demoTradeTimeouts.current.clear();
+    testnetTradeTimeouts.current.forEach(timeoutId => clearTimeout(timeoutId));
+    testnetTradeTimeouts.current.clear();
     
-    // Save new session data
+    // Save new session data and balance
     saveToLocalStorage(LOCAL_STORAGE_KEYS.SESSION_DATA, { startTime: Date.now() });
+    saveToLocalStorage(LOCAL_STORAGE_KEYS.TESTNET_BALANCE, initialBalance);
     
-    addLog("🔄 Demo data direset ke kondisi awal");
-    addLog("🆕 Sesi demo baru dimulai");
+    addLog("🔄 Testnet data direset ke kondisi awal");
+    addLog("🆕 Sesi testnet baru dimulai");
   };
 
   return (
@@ -1252,11 +1312,11 @@ const ProfessionalTradingBot = () => {
           <div className="flex items-center space-x-2">
             <FaChartLine className="text-blue-500 text-xl sm:text-2xl" />
             <h1 className="text-lg sm:text-xl font-bold">ProTrade Bot</h1>
-            <span className="text-xs bg-orange-900 text-orange-200 px-2 py-1 rounded font-bold">
-              DEMO MODE
+            <span className="text-xs bg-blue-900 text-blue-200 px-2 py-1 rounded font-bold">
+              TESTNET MODE
             </span>
             <span className="text-xs bg-green-900 text-green-200 px-2 py-1 rounded hidden sm:block">
-              WR: 10-11%
+              WR: {performanceStats ? `${performanceStats.winRate}%` : 'N/A'}
             </span>
           </div>
           
@@ -1300,11 +1360,11 @@ const ProfessionalTradingBot = () => {
                 <span className="hidden sm:inline">Refresh</span>
               </button>
               <button
-                onClick={handleResetDemo}
+                onClick={handleResetTestnet}
                 className="px-2 py-1 sm:px-3 sm:py-1 rounded flex items-center bg-orange-600 hover:bg-orange-700 text-xs sm:text-sm"
               >
                 <FaRedo className="mr-0 sm:mr-1" />
-                <span className="hidden sm:inline">Reset Demo</span>
+                <span className="hidden sm:inline">Reset Testnet</span>
               </button>
             </div>
           </div>
@@ -1357,22 +1417,23 @@ const ProfessionalTradingBot = () => {
           <div className="lg:col-span-1 space-y-4 sm:space-y-6">
             {/* Kontrol Bot */}
             <div className="bg-gray-800 rounded-lg p-3 sm:p-4 border border-gray-700">
-              <h2 className="text-md sm:text-lg font-semibold mb-3 flex items-center">
-                <FaCog className="mr-2 text-blue-400 text-sm sm:text-base" /> Bot Control
-                <span className="ml-2 text-xs bg-orange-700 text-orange-200 px-2 py-1 rounded">
-                  DEMO
-                </span>
-              </h2>
+                              <h2 className="text-md sm:text-lg font-semibold mb-3 flex items-center">
+                  <FaCog className="mr-2 text-blue-400 text-sm sm:text-base" /> Bot Control
+                  <span className="ml-2 text-xs bg-blue-700 text-blue-200 px-2 py-1 rounded">
+                    TESTNET
+                  </span>
+                </h2>
               
-              <div className="mb-3 p-2 bg-orange-900 bg-opacity-30 border border-orange-700 rounded text-xs">
-                <div className="font-semibold text-orange-300 mb-1">🎯 Demo Trading Mode</div>
-                <div className="text-orange-200">
-                  • Target Win Rate: 10-11% (simulasi realistis)<br/>
+              <div className="mb-3 p-2 bg-blue-900 bg-opacity-30 border border-blue-700 rounded text-xs">
+                <div className="font-semibold text-blue-300 mb-1">🎯 Testnet Trading Mode</div>
+                <div className="text-blue-200">
+                  • Real TradingView analysis<br/>
                   • Data chart: Real-time dari Binance<br/>
-                  • Balance & trades: Simulasi dummy<br/>
+                  • Balance: 10,000 USDT (testnet)<br/>
                   • Disimpan di local storage<br/>
-                  • Total trades: {demoSimulator.tradeCount}<br/>
-                  • Consecutive losses: {demoSimulator.consecutiveLosses}
+                  • Total trades: {testnetSimulator.tradeCount}<br/>
+                  • Win/Loss: {testnetSimulator.winCount}/{testnetSimulator.lossCount}<br/>
+                  • Current WR: {testnetSimulator.getCurrentWinRate().toFixed(1)}%
                 </div>
               </div>
               
@@ -1624,9 +1685,9 @@ const ProfessionalTradingBot = () => {
                           Counter
                         </span>
                       )}
-                      {signal.isDemo && (
-                        <span className="text-xs bg-orange-700 px-1 sm:px-2 py-0.5 rounded ml-1">
-                          DEMO
+                      {signal.isTestnet && (
+                        <span className="text-xs bg-blue-700 px-1 sm:px-2 py-0.5 rounded ml-1">
+                          TESTNET
                         </span>
                       )}
                     </div>
@@ -1687,9 +1748,9 @@ const ProfessionalTradingBot = () => {
                       <tr key={trade.id} className="border-b border-gray-700 text-xs sm:text-sm">
                         <td className="py-1 sm:py-2">
                           {trade.symbol}
-                          {trade.isDemo && (
-                            <span className="ml-1 text-xs bg-orange-700 text-orange-200 px-1 rounded">
-                              DEMO
+                          {trade.isTestnet && (
+                            <span className="ml-1 text-xs bg-blue-700 text-blue-200 px-1 rounded">
+                              TESTNET
                             </span>
                           )}
                         </td>
@@ -1755,9 +1816,9 @@ const ProfessionalTradingBot = () => {
                     </td>
                     <td className="py-1 sm:py-2">
                       {trade.symbol}
-                      {trade.isDemo && (
-                        <span className="ml-1 text-xs bg-orange-700 text-orange-200 px-1 rounded">
-                          DEMO
+                      {trade.isTestnet && (
+                        <span className="ml-1 text-xs bg-blue-700 text-blue-200 px-1 rounded">
+                          TESTNET
                         </span>
                       )}
                     </td>
