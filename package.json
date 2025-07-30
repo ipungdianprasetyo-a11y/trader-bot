@@ -9,6 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.53.0",
     "binance-api-node": "^0.12.9",
     "chart.js": "^4.5.0",
     "net": "^1.0.2",
