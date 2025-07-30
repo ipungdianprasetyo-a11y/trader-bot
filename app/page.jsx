@@ -54,6 +54,135 @@ const createClient = (apiKey, apiSecret, isTestnet) => {
   });
 };
 
+// Local Storage utilities
+const LOCAL_STORAGE_KEYS = {
+  DEMO_BALANCE: 'demo_trading_balance',
+  DEMO_TRADES: 'demo_trading_trades',
+  DEMO_PERFORMANCE: 'demo_trading_performance',
+  BOT_SETTINGS: 'bot_trading_settings'
+};
+
+const saveToLocalStorage = (key, data) => {
+  try {
+    localStorage.setItem(key, JSON.stringify(data));
+  } catch (error) {
+    console.error('Error saving to localStorage:', error);
+  }
+};
+
+const loadFromLocalStorage = (key, defaultValue = null) => {
+  try {
+    const item = localStorage.getItem(key);
+    return item ? JSON.parse(item) : defaultValue;
+  } catch (error) {
+    console.error('Error loading from localStorage:', error);
+    return defaultValue;
+  }
+};
+
+// Demo Trading Simulator
+class DemoTradingSimulator {
+  constructor() {
+    this.winRate = 10.5; // 10.5% win rate
+    this.baseBalance = 10000;
+    this.tradeCount = 0;
+    this.sessionStartTime = Date.now();
+  }
+
+  // Generate realistic random trade outcome based on win rate
+  generateTradeOutcome() {
+    const random = Math.random() * 100;
+    const isWin = random <= this.winRate;
+    
+    if (isWin) {
+      // Win: 1.5x to 3x risk (realistic RR)
+      return {
+        isWin: true,
+        multiplier: 1.5 + Math.random() * 1.5 // 1.5x to 3x
+      };
+    } else {
+      // Loss: -0.8x to -1x risk (partial losses and full losses)
+      return {
+        isWin: false,
+        multiplier: -(0.8 + Math.random() * 0.2) // -0.8x to -1x
+      };
+    }
+  }
+
+  // Generate demo trade with realistic parameters
+  generateDemoTrade(signal, currentPrice, settings) {
+    const riskAmount = this.baseBalance * (settings.riskPerTrade / 100);
+    const outcome = this.generateTradeOutcome();
+    
+    // Calculate realistic entry, SL, TP based on current market conditions
+    const volatility = Math.random() * 0.02 + 0.01; // 1-3% volatility
+    const slDistance = currentPrice * volatility;
+    
+    const entryPrice = currentPrice + (Math.random() - 0.5) * (currentPrice * 0.001); // Small slippage
+    const stopLoss = signal.type === 'BUY' 
+      ? entryPrice - slDistance
+      : entryPrice + slDistance;
+    const takeProfit = signal.type === 'BUY' 
+      ? entryPrice + (slDistance * settings.rrr)
+      : entryPrice - (slDistance * settings.rrr);
+    
+    const quantity = riskAmount / Math.abs(entryPrice - stopLoss);
+    
+    // Simulate trade execution with random delay
+    const executionDelay = Math.random() * 5000 + 2000; // 2-7 seconds
+    
+    const trade = {
+      id: `DEMO-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      symbol: signal.symbol,
+      type: signal.type,
+      quantity: parseFloat(quantity.toFixed(6)),
+      entryPrice: parseFloat(entryPrice.toFixed(2)),
+      stopLoss: parseFloat(stopLoss.toFixed(2)),
+      takeProfit: parseFloat(takeProfit.toFixed(2)),
+      timestamp: Date.now(),
+      status: 'OPEN',
+      signalScore: signal.score,
+      counterTrend: signal.counterTrend || false,
+      isDemo: true,
+      outcome: outcome,
+      executionDelay: executionDelay
+    };
+    
+    this.tradeCount++;
+    return trade;
+  }
+
+  // Simulate trade closure based on predetermined outcome
+  simulateTradeClose(trade, currentPrice) {
+    if (!trade.outcome || trade.status !== 'OPEN') return null;
+    
+    const { isWin, multiplier } = trade.outcome;
+    const riskAmount = Math.abs(trade.entryPrice - trade.stopLoss) * trade.quantity;
+    const pnl = riskAmount * multiplier;
+    
+    // Determine exit price based on outcome
+    let exitPrice;
+    if (isWin) {
+      // Exit near take profit with some variance
+      const tpVariance = Math.abs(trade.takeProfit - trade.entryPrice) * 0.1;
+      exitPrice = trade.takeProfit + (Math.random() - 0.5) * tpVariance;
+    } else {
+      // Exit near stop loss with some variance
+      const slVariance = Math.abs(trade.stopLoss - trade.entryPrice) * 0.1;
+      exitPrice = trade.stopLoss + (Math.random() - 0.5) * slVariance;
+    }
+    
+    return {
+      ...trade,
+      exitPrice: parseFloat(exitPrice.toFixed(2)),
+      closeTime: Date.now(),
+      status: 'CLOSED',
+      pnl: parseFloat(pnl.toFixed(2)),
+      closeReason: isWin ? 'TP HIT' : 'SL HIT'
+    };
+  }
+}
+
 const ProfessionalTradingBot = () => {
   // State management
   const [symbol, setSymbol] = useState('BTCUSDT');
@@ -73,6 +202,7 @@ const ProfessionalTradingBot = () => {
     macdSlow: 26,
     macdSignal: 9,
     atrPeriod: 14,
+    demoMode: true, // Always in demo mode
   });
   const [candles, setCandles] = useState([]);
   const [h1Candles, setH1Candles] = useState([]);
@@ -90,10 +220,50 @@ const ProfessionalTradingBot = () => {
   });
   
   const [performanceStats, setPerformanceStats] = useState(null);
+  const [demoSimulator] = useState(new DemoTradingSimulator());
   
   const clientRef = useRef(null);
   const wsRef = useRef(null);
   const botIntervalRef = useRef(null);
+  const demoTradeTimeouts = useRef(new Map());
+
+  // Load data from localStorage on component mount
+  useEffect(() => {
+    const savedBalance = loadFromLocalStorage(LOCAL_STORAGE_KEYS.DEMO_BALANCE);
+    const savedTrades = loadFromLocalStorage(LOCAL_STORAGE_KEYS.DEMO_TRADES, []);
+    const savedSettings = loadFromLocalStorage(LOCAL_STORAGE_KEYS.BOT_SETTINGS);
+    
+    if (savedBalance) {
+      setBalance(savedBalance);
+    }
+    
+    if (savedTrades.length > 0) {
+      setTrades(savedTrades);
+    }
+    
+    if (savedSettings) {
+      setSettings(prev => ({ ...prev, ...savedSettings }));
+    }
+    
+    addLog("🔄 Data demo trading dimuat dari local storage");
+  }, []);
+
+  // Save data to localStorage when state changes
+  useEffect(() => {
+    if (balance.USDT !== 10000 || balance.BTC !== 0) {
+      saveToLocalStorage(LOCAL_STORAGE_KEYS.DEMO_BALANCE, balance);
+    }
+  }, [balance]);
+
+  useEffect(() => {
+    if (trades.length > 0) {
+      saveToLocalStorage(LOCAL_STORAGE_KEYS.DEMO_TRADES, trades);
+    }
+  }, [trades]);
+
+  useEffect(() => {
+    saveToLocalStorage(LOCAL_STORAGE_KEYS.BOT_SETTINGS, settings);
+  }, [settings]);
 
   // Fungsi untuk menambahkan log
   const addLog = (message) => {
@@ -371,79 +541,100 @@ const ProfessionalTradingBot = () => {
     }
   };
 
-  // Eksekusi trade dengan manajemen risiko
+  // Eksekusi trade dengan sistem demo
   const executeTrade = async (signal) => {
-    if (!clientRef.current || !signal) return;
+    if (!signal) return;
     
     try {
-      addLog(`Memulai eksekusi order ${signal.type}...`);
+      addLog(`🎯 Memulai eksekusi DEMO order ${signal.type}...`);
       
-      // Hitung ukuran posisi (1% risiko)
-      const usdtBalance = balance.USDT;
-      const riskAmount = usdtBalance * (settings.riskPerTrade / 100);
-      const entryPrice = signal.price;
+      const currentPrice = signal.price;
       
-      // Hitung SL dan TP berdasarkan ATR
-      const atrValue = indicators.main.atr || 100; // default value jika ATR tidak ada
-      const sl = signal.type === 'BUY' 
-        ? entryPrice - (1.5 * atrValue)
-        : entryPrice + (1.5 * atrValue);
+      // Generate demo trade using simulator
+      const demoTrade = demoSimulator.generateDemoTrade(signal, currentPrice, settings);
       
-      const tp = signal.type === 'BUY' 
-        ? entryPrice + (settings.rrr * 1.5 * atrValue)
-        : entryPrice - (settings.rrr * 1.5 * atrValue);
+      addLog(`📊 DEMO Trade dibuat dengan outcome: ${demoTrade.outcome.isWin ? 'WIN' : 'LOSS'} 
+        (${(demoTrade.outcome.multiplier * 100).toFixed(1)}% dari risk)`);
       
-      // Hitung kuantitas
-      const priceDifference = Math.abs(entryPrice - sl);
-      const quantity = riskAmount / priceDifference;
+      // Update state immediately
+      setTrades(prev => [...prev, demoTrade]);
       
-      // Simulasi order
-      const newTrade = {
-        id: `TRADE-${Date.now()}`,
-        symbol,
-        type: signal.type,
-        quantity: parseFloat(quantity.toFixed(6)),
-        entryPrice,
-        stopLoss: parseFloat(sl.toFixed(2)),
-        takeProfit: parseFloat(tp.toFixed(2)),
-        timestamp: Date.now(),
-        status: 'OPEN',
-        signalScore: signal.score,
-        counterTrend: signal.counterTrend || false
-      };
-      
-      // Update state
-      setTrades(prev => [...prev, newTrade]);
-      
-      // Simulasi update balance
-      if (signal.type === 'BUY') {
+      // Simulate balance update (demo only - no real money involved)
+      const riskAmount = Math.abs(demoTrade.entryPrice - demoTrade.stopLoss) * demoTrade.quantity;
+      if (demoTrade.type === 'BUY') {
         setBalance(prev => ({
-          USDT: prev.USDT - (entryPrice * quantity),
-          BTC: prev.BTC + quantity
+          USDT: prev.USDT - riskAmount,
+          BTC: prev.BTC + demoTrade.quantity
         }));
       } else {
         setBalance(prev => ({
-          USDT: prev.USDT + (entryPrice * quantity),
-          BTC: prev.BTC - quantity
+          USDT: prev.USDT + riskAmount,
+          BTC: prev.BTC - demoTrade.quantity
         }));
       }
       
-      addLog(`✅ Order ${signal.type} dieksekusi! 
-        Jumlah: ${quantity.toFixed(6)} | 
-        Entry: $${entryPrice.toFixed(2)} | 
-        SL: $${sl.toFixed(2)} | 
-        TP: $${tp.toFixed(2)}`);
+      addLog(`✅ DEMO Order ${demoTrade.type} dieksekusi! 
+        Jumlah: ${demoTrade.quantity.toFixed(6)} | 
+        Entry: $${demoTrade.entryPrice.toFixed(2)} | 
+        SL: $${demoTrade.stopLoss.toFixed(2)} | 
+        TP: $${demoTrade.takeProfit.toFixed(2)}`);
       
-      return newTrade;
+      // Schedule automatic trade closure based on predetermined outcome
+      const closeDelay = Math.random() * 120000 + 30000; // 30 seconds to 2.5 minutes
+      const timeoutId = setTimeout(() => {
+        closeDemoTrade(demoTrade.id);
+        demoTradeTimeouts.current.delete(demoTrade.id);
+      }, closeDelay);
+      
+      demoTradeTimeouts.current.set(demoTrade.id, timeoutId);
+      
+      return demoTrade;
       
     } catch (error) {
-      const errMsg = `Trade execution error: ${error.message}`;
+      const errMsg = `Demo trade execution error: ${error.message}`;
       console.error(errMsg);
       addLog(errMsg);
     }
   };
 
-  // Cek apakah trade perlu ditutup
+  // Close demo trade based on predetermined outcome
+  const closeDemoTrade = (tradeId) => {
+    setTrades(prev => prev.map(trade => {
+      if (trade.id !== tradeId || trade.status !== 'OPEN') return trade;
+      
+      const currentPrice = candles[candles.length - 1]?.close || trade.entryPrice;
+      const closedTrade = demoSimulator.simulateTradeClose(trade, currentPrice);
+      
+      if (closedTrade) {
+        // Update balance with PnL
+        const pnl = closedTrade.pnl;
+        setBalance(prev => {
+          if (trade.type === 'BUY') {
+            return {
+              USDT: prev.USDT + (closedTrade.exitPrice * trade.quantity),
+              BTC: prev.BTC - trade.quantity
+            };
+          } else {
+            return {
+              USDT: prev.USDT - (closedTrade.exitPrice * trade.quantity) + pnl,
+              BTC: prev.BTC + trade.quantity
+            };
+          }
+        });
+        
+        const pnlEmoji = pnl > 0 ? '💰' : '📉';
+        addLog(`${pnlEmoji} DEMO Trade ditutup: ${trade.type} ${trade.symbol} 
+          | Alasan: ${closedTrade.closeReason} 
+          | Profit: $${pnl.toFixed(2)}`);
+        
+        return closedTrade;
+      }
+      
+      return trade;
+    }));
+  };
+
+  // Cek apakah trade perlu ditutup (hanya untuk non-demo trades)
   const checkTradeClosure = () => {
     if (candles.length === 0) return;
     
@@ -453,8 +644,9 @@ const ProfessionalTradingBot = () => {
       return;
     }
     
+    // Skip closure check for demo trades as they are handled automatically
     setTrades(prev => prev.map(trade => {
-      if (trade.status !== 'OPEN') return trade;
+      if (trade.status !== 'OPEN' || trade.isDemo) return trade;
       
       let shouldClose = false;
       let closeReason = '';
@@ -510,7 +702,47 @@ const ProfessionalTradingBot = () => {
     }));
   };
 
-  // Main bot loop
+  // Generate demo signals independent of real market analysis
+  const generateDemoSignal = () => {
+    if (candles.length === 0) return null;
+    
+    const lastCandle = candles[candles.length - 1];
+    const currentPrice = parseFloat(lastCandle.close);
+    
+    // Generate random signal with some market-like behavior
+    const shouldGenerateSignal = Math.random() < 0.3; // 30% chance per cycle
+    if (!shouldGenerateSignal) return null;
+    
+    const signalType = Math.random() > 0.5 ? 'BUY' : 'SELL';
+    
+    // Create realistic looking conditions (always demo)
+    const demoConditions = {
+      rsi: Math.random() > 0.5,
+      stochastic: Math.random() > 0.5,
+      ema: Math.random() > 0.5,
+      macd: Math.random() > 0.5,
+      volume: Math.random() > 0.5,
+      fibonacci: Math.random() > 0.5
+    };
+    
+    const score = Object.values(demoConditions).filter(Boolean).length;
+    
+    const signal = {
+      type: signalType,
+      price: currentPrice,
+      timestamp: Date.now(),
+      symbol,
+      timeframe,
+      conditions: demoConditions,
+      score: score,
+      isDemo: true
+    };
+    
+    addLog(`🎲 DEMO Signal generated: ${signalType} dengan skor ${score}/6`);
+    return signal;
+  };
+
+  // Main bot loop dengan sistem demo
   const runBotCycle = async () => {
     if (botStatus !== 'running') {
       addLog("Bot tidak berjalan, skip cycle");
@@ -518,27 +750,41 @@ const ProfessionalTradingBot = () => {
     }
     
     try {
-      addLog("Memulai siklus bot...");
+      addLog("🔄 Memulai siklus DEMO bot...");
+      
+      // Fetch real market data for charts
       const candlesData = await fetchMultiTimeframeCandles();
       if (!candlesData) {
         addLog("Data candle tidak tersedia, skip siklus");
         return;
       }
       
-      const signal = generateSignal(candlesData, indicators);
-      if (signal) {
-        setSignals(prev => [signal, ...prev.slice(0, 19)]);
-        await executeTrade(signal);
+      // Generate demo signal instead of real analysis
+      const demoSignal = generateDemoSignal();
+      
+      if (demoSignal) {
+        setSignals(prev => [demoSignal, ...prev.slice(0, 19)]);
+        
+        // Check if we should execute trade (limit concurrent trades)
+        const openTrades = trades.filter(t => t.status === 'OPEN').length;
+        if (openTrades < 3) { // Max 3 concurrent demo trades
+          await executeTrade(demoSignal);
+        } else {
+          addLog("⚠️ Maksimal 3 trade aktif, skip eksekusi");
+        }
+      } else {
+        addLog("📊 Tidak ada sinyal demo yang dihasilkan");
       }
       
+      // Check non-demo trade closures
       checkTradeClosure();
       
       // Hitung statistik performa
       calculatePerformance();
       
-      addLog("Siklus bot selesai");
+      addLog("✅ Siklus DEMO bot selesai");
     } catch (error) {
-      const errMsg = `Bot cycle error: ${error.message}`;
+      const errMsg = `Demo bot cycle error: ${error.message}`;
       console.error(errMsg);
       addLog(errMsg);
     }
@@ -842,6 +1088,25 @@ const ProfessionalTradingBot = () => {
     addLog("Data diperbarui manual");
   };
 
+  // Reset demo data
+  const handleResetDemo = () => {
+    setBalance({ USDT: 10000, BTC: 0 });
+    setTrades([]);
+    setSignals([]);
+    setPerformanceStats(null);
+    
+    // Clear localStorage
+    localStorage.removeItem(LOCAL_STORAGE_KEYS.DEMO_BALANCE);
+    localStorage.removeItem(LOCAL_STORAGE_KEYS.DEMO_TRADES);
+    localStorage.removeItem(LOCAL_STORAGE_KEYS.DEMO_PERFORMANCE);
+    
+    // Clear any pending timeouts
+    demoTradeTimeouts.current.forEach(timeoutId => clearTimeout(timeoutId));
+    demoTradeTimeouts.current.clear();
+    
+    addLog("🔄 Demo data direset ke kondisi awal");
+  };
+
   return (
     <div className="min-h-screen bg-gray-900 text-gray-100">
       {/* Header */}
@@ -850,8 +1115,11 @@ const ProfessionalTradingBot = () => {
           <div className="flex items-center space-x-2">
             <FaChartLine className="text-blue-500 text-xl sm:text-2xl" />
             <h1 className="text-lg sm:text-xl font-bold">ProTrade Bot</h1>
-            <span className="text-xs bg-blue-900 text-blue-200 px-2 py-1 rounded hidden sm:block">
-              {config.isTestnet ? 'TESTNET' : 'LIVE'}
+            <span className="text-xs bg-orange-900 text-orange-200 px-2 py-1 rounded font-bold">
+              DEMO MODE
+            </span>
+            <span className="text-xs bg-green-900 text-green-200 px-2 py-1 rounded hidden sm:block">
+              WR: 10-11%
             </span>
           </div>
           
@@ -893,6 +1161,13 @@ const ProfessionalTradingBot = () => {
               >
                 <FaRedo className="mr-0 sm:mr-1" />
                 <span className="hidden sm:inline">Refresh</span>
+              </button>
+              <button
+                onClick={handleResetDemo}
+                className="px-2 py-1 sm:px-3 sm:py-1 rounded flex items-center bg-orange-600 hover:bg-orange-700 text-xs sm:text-sm"
+              >
+                <FaRedo className="mr-0 sm:mr-1" />
+                <span className="hidden sm:inline">Reset Demo</span>
               </button>
             </div>
           </div>
@@ -947,7 +1222,20 @@ const ProfessionalTradingBot = () => {
             <div className="bg-gray-800 rounded-lg p-3 sm:p-4 border border-gray-700">
               <h2 className="text-md sm:text-lg font-semibold mb-3 flex items-center">
                 <FaCog className="mr-2 text-blue-400 text-sm sm:text-base" /> Bot Control
+                <span className="ml-2 text-xs bg-orange-700 text-orange-200 px-2 py-1 rounded">
+                  DEMO
+                </span>
               </h2>
+              
+              <div className="mb-3 p-2 bg-orange-900 bg-opacity-30 border border-orange-700 rounded text-xs">
+                <div className="font-semibold text-orange-300 mb-1">🎯 Demo Trading Mode</div>
+                <div className="text-orange-200">
+                  • Win Rate: 10-11% (simulasi realistis)<br/>
+                  • Data chart: Real-time dari Binance<br/>
+                  • Balance & trades: Simulasi dummy<br/>
+                  • Disimpan di local storage
+                </div>
+              </div>
               
               {/* Desktop-only controls */}
               <div className="hidden sm:grid grid-cols-2 gap-4 mb-4">
@@ -1197,6 +1485,11 @@ const ProfessionalTradingBot = () => {
                           Counter
                         </span>
                       )}
+                      {signal.isDemo && (
+                        <span className="text-xs bg-orange-700 px-1 sm:px-2 py-0.5 rounded ml-1">
+                          DEMO
+                        </span>
+                      )}
                     </div>
                     <div className="text-xs text-gray-400">
                       {new Date(signal.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
@@ -1253,7 +1546,14 @@ const ProfessionalTradingBot = () => {
                     
                     return (
                       <tr key={trade.id} className="border-b border-gray-700 text-xs sm:text-sm">
-                        <td className="py-1 sm:py-2">{trade.symbol}</td>
+                        <td className="py-1 sm:py-2">
+                          {trade.symbol}
+                          {trade.isDemo && (
+                            <span className="ml-1 text-xs bg-orange-700 text-orange-200 px-1 rounded">
+                              DEMO
+                            </span>
+                          )}
+                        </td>
                         <td className={`py-1 sm:py-2 font-bold ${
                           trade.type === 'BUY' ? 'text-green-400' : 'text-red-400'
                         }`}>
@@ -1314,7 +1614,14 @@ const ProfessionalTradingBot = () => {
                     <td className="py-1 sm:py-2">
                       {new Date(trade.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
                     </td>
-                    <td className="py-1 sm:py-2">{trade.symbol}</td>
+                    <td className="py-1 sm:py-2">
+                      {trade.symbol}
+                      {trade.isDemo && (
+                        <span className="ml-1 text-xs bg-orange-700 text-orange-200 px-1 rounded">
+                          DEMO
+                        </span>
+                      )}
+                    </td>
                     <td className={`py-1 sm:py-2 font-bold ${
                       trade.type === 'BUY' ? 'text-green-400' : 'text-red-400'
                     }`}>
