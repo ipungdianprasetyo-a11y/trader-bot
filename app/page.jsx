@@ -59,7 +59,9 @@ const LOCAL_STORAGE_KEYS = {
   DEMO_BALANCE: 'demo_trading_balance',
   DEMO_TRADES: 'demo_trading_trades',
   DEMO_PERFORMANCE: 'demo_trading_performance',
-  BOT_SETTINGS: 'bot_trading_settings'
+  BOT_SETTINGS: 'bot_trading_settings',
+  SIMULATOR_STATE: 'demo_simulator_state',
+  SESSION_DATA: 'demo_session_data'
 };
 
 const saveToLocalStorage = (key, data) => {
@@ -83,30 +85,69 @@ const loadFromLocalStorage = (key, defaultValue = null) => {
 // Demo Trading Simulator
 class DemoTradingSimulator {
   constructor() {
-    this.winRate = 10.5; // 10.5% win rate
+    this.winRate = 10.5; // Fixed 10.5% win rate
     this.baseBalance = 10000;
     this.tradeCount = 0;
     this.sessionStartTime = Date.now();
+    this.consecutiveLosses = 0;
+    this.recentTrades = [];
   }
 
   // Generate realistic random trade outcome based on win rate
   generateTradeOutcome() {
-    const random = Math.random() * 100;
-    const isWin = random <= this.winRate;
+    // Ensure consistent win rate over time
+    const recentWins = this.recentTrades.filter(t => t.isWin).length;
+    const recentTotal = this.recentTrades.length;
     
-    if (isWin) {
-      // Win: 1.5x to 3x risk (realistic RR)
-      return {
+    let shouldWin = false;
+    
+    if (recentTotal >= 20) {
+      const currentWinRate = (recentWins / recentTotal) * 100;
+      // Force win if we're significantly below target win rate
+      if (currentWinRate < this.winRate - 2) {
+        shouldWin = true;
+      }
+      // Force loss if we're significantly above target win rate
+      else if (currentWinRate > this.winRate + 2) {
+        shouldWin = false;
+      }
+      // Otherwise use normal probability
+      else {
+        shouldWin = Math.random() * 100 <= this.winRate;
+      }
+    } else {
+      shouldWin = Math.random() * 100 <= this.winRate;
+    }
+    
+    // Prevent too many consecutive losses (max 15)
+    if (this.consecutiveLosses >= 15) {
+      shouldWin = true;
+    }
+    
+    let outcome;
+    if (shouldWin) {
+      this.consecutiveLosses = 0;
+      // Win: 1.8x to 4x risk (higher RR to compensate low win rate)
+      outcome = {
         isWin: true,
-        multiplier: 1.5 + Math.random() * 1.5 // 1.5x to 3x
+        multiplier: 1.8 + Math.random() * 2.2 // 1.8x to 4x
       };
     } else {
-      // Loss: -0.8x to -1x risk (partial losses and full losses)
-      return {
+      this.consecutiveLosses++;
+      // Loss: -0.9x to -1x risk (most losses are full)
+      outcome = {
         isWin: false,
-        multiplier: -(0.8 + Math.random() * 0.2) // -0.8x to -1x
+        multiplier: -(0.9 + Math.random() * 0.1) // -0.9x to -1x
       };
     }
+    
+    // Track recent trades for win rate consistency
+    this.recentTrades.push(outcome);
+    if (this.recentTrades.length > 50) {
+      this.recentTrades.shift();
+    }
+    
+    return outcome;
   }
 
   // Generate demo trade with realistic parameters
@@ -115,10 +156,13 @@ class DemoTradingSimulator {
     const outcome = this.generateTradeOutcome();
     
     // Calculate realistic entry, SL, TP based on current market conditions
-    const volatility = Math.random() * 0.02 + 0.01; // 1-3% volatility
+    const volatility = Math.random() * 0.025 + 0.015; // 1.5-4% volatility (more realistic)
     const slDistance = currentPrice * volatility;
     
-    const entryPrice = currentPrice + (Math.random() - 0.5) * (currentPrice * 0.001); // Small slippage
+    // More realistic slippage based on market conditions
+    const slippageRange = currentPrice * 0.0005; // 0.05% max slippage
+    const entryPrice = currentPrice + (Math.random() - 0.5) * slippageRange;
+    
     const stopLoss = signal.type === 'BUY' 
       ? entryPrice - slDistance
       : entryPrice + slDistance;
@@ -128,24 +172,25 @@ class DemoTradingSimulator {
     
     const quantity = riskAmount / Math.abs(entryPrice - stopLoss);
     
-    // Simulate trade execution with random delay
-    const executionDelay = Math.random() * 5000 + 2000; // 2-7 seconds
+    // Realistic execution delay
+    const executionDelay = Math.random() * 3000 + 1000; // 1-4 seconds
     
     const trade = {
       id: `DEMO-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       symbol: signal.symbol,
       type: signal.type,
-      quantity: parseFloat(quantity.toFixed(6)),
-      entryPrice: parseFloat(entryPrice.toFixed(2)),
-      stopLoss: parseFloat(stopLoss.toFixed(2)),
-      takeProfit: parseFloat(takeProfit.toFixed(2)),
+      quantity: parseFloat(quantity.toFixed(8)), // More precision for crypto
+      entryPrice: parseFloat(entryPrice.toFixed(4)),
+      stopLoss: parseFloat(stopLoss.toFixed(4)),
+      takeProfit: parseFloat(takeProfit.toFixed(4)),
       timestamp: Date.now(),
       status: 'OPEN',
       signalScore: signal.score,
       counterTrend: signal.counterTrend || false,
       isDemo: true,
       outcome: outcome,
-      executionDelay: executionDelay
+      executionDelay: executionDelay,
+      tradeId: this.tradeCount + 1
     };
     
     this.tradeCount++;
@@ -232,6 +277,8 @@ const ProfessionalTradingBot = () => {
     const savedBalance = loadFromLocalStorage(LOCAL_STORAGE_KEYS.DEMO_BALANCE);
     const savedTrades = loadFromLocalStorage(LOCAL_STORAGE_KEYS.DEMO_TRADES, []);
     const savedSettings = loadFromLocalStorage(LOCAL_STORAGE_KEYS.BOT_SETTINGS);
+    const savedSimulatorState = loadFromLocalStorage(LOCAL_STORAGE_KEYS.SIMULATOR_STATE);
+    const savedSessionData = loadFromLocalStorage(LOCAL_STORAGE_KEYS.SESSION_DATA);
     
     if (savedBalance) {
       setBalance(savedBalance);
@@ -239,13 +286,36 @@ const ProfessionalTradingBot = () => {
     
     if (savedTrades.length > 0) {
       setTrades(savedTrades);
+      // Filter out old trades (keep only last 7 days)
+      const weekAgo = Date.now() - (7 * 24 * 60 * 60 * 1000);
+      const recentTrades = savedTrades.filter(trade => trade.timestamp > weekAgo);
+      if (recentTrades.length !== savedTrades.length) {
+        setTrades(recentTrades);
+        saveToLocalStorage(LOCAL_STORAGE_KEYS.DEMO_TRADES, recentTrades);
+      }
     }
     
     if (savedSettings) {
       setSettings(prev => ({ ...prev, ...savedSettings }));
     }
     
+    // Restore simulator state
+    if (savedSimulatorState) {
+      demoSimulator.tradeCount = savedSimulatorState.tradeCount || 0;
+      demoSimulator.consecutiveLosses = savedSimulatorState.consecutiveLosses || 0;
+      demoSimulator.recentTrades = savedSimulatorState.recentTrades || [];
+    }
+    
     addLog("🔄 Data demo trading dimuat dari local storage");
+    
+    // Log session info
+    if (savedSessionData) {
+      const sessionTime = Math.floor((Date.now() - savedSessionData.startTime) / (1000 * 60 * 60));
+      addLog(`📊 Sesi demo berlanjut (${sessionTime} jam yang lalu)`);
+    } else {
+      saveToLocalStorage(LOCAL_STORAGE_KEYS.SESSION_DATA, { startTime: Date.now() });
+      addLog("🆕 Sesi demo baru dimulai");
+    }
   }, []);
 
   // Save data to localStorage when state changes
@@ -258,6 +328,14 @@ const ProfessionalTradingBot = () => {
   useEffect(() => {
     if (trades.length > 0) {
       saveToLocalStorage(LOCAL_STORAGE_KEYS.DEMO_TRADES, trades);
+      
+      // Save simulator state
+      const simulatorState = {
+        tradeCount: demoSimulator.tradeCount,
+        consecutiveLosses: demoSimulator.consecutiveLosses,
+        recentTrades: demoSimulator.recentTrades
+      };
+      saveToLocalStorage(LOCAL_STORAGE_KEYS.SIMULATOR_STATE, simulatorState);
     }
   }, [trades]);
 
@@ -579,8 +657,11 @@ const ProfessionalTradingBot = () => {
         SL: $${demoTrade.stopLoss.toFixed(2)} | 
         TP: $${demoTrade.takeProfit.toFixed(2)}`);
       
-      // Schedule automatic trade closure based on predetermined outcome
-      const closeDelay = Math.random() * 120000 + 30000; // 30 seconds to 2.5 minutes
+      // Schedule automatic trade closure with more realistic timing
+      const baseDelay = 45000; // 45 seconds base
+      const randomDelay = Math.random() * 180000; // 0-3 minutes additional
+      const closeDelay = baseDelay + randomDelay; // 45 seconds to 3.75 minutes total
+      
       const timeoutId = setTimeout(() => {
         closeDemoTrade(demoTrade.id);
         demoTradeTimeouts.current.delete(demoTrade.id);
@@ -702,30 +783,73 @@ const ProfessionalTradingBot = () => {
     }));
   };
 
-  // Generate demo signals independent of real market analysis
+  // Generate demo signals with more realistic behavior
   const generateDemoSignal = () => {
     if (candles.length === 0) return null;
     
     const lastCandle = candles[candles.length - 1];
     const currentPrice = parseFloat(lastCandle.close);
     
-    // Generate random signal with some market-like behavior
-    const shouldGenerateSignal = Math.random() < 0.3; // 30% chance per cycle
+    // More frequent signals but with varying quality
+    const shouldGenerateSignal = Math.random() < 0.4; // 40% chance per cycle
     if (!shouldGenerateSignal) return null;
     
-    const signalType = Math.random() > 0.5 ? 'BUY' : 'SELL';
+    // Bias signal type based on recent price action for realism
+    const recentCandles = candles.slice(-5);
+    const priceChange = recentCandles.length >= 2 ? 
+      ((parseFloat(recentCandles[recentCandles.length - 1].close) - parseFloat(recentCandles[0].close)) / parseFloat(recentCandles[0].close)) * 100 : 0;
     
-    // Create realistic looking conditions (always demo)
-    const demoConditions = {
-      rsi: Math.random() > 0.5,
-      stochastic: Math.random() > 0.5,
-      ema: Math.random() > 0.5,
-      macd: Math.random() > 0.5,
-      volume: Math.random() > 0.5,
-      fibonacci: Math.random() > 0.5
-    };
+    let signalType;
+    if (priceChange > 1) {
+      signalType = Math.random() > 0.3 ? 'BUY' : 'SELL'; // Bias towards BUY on uptrend
+    } else if (priceChange < -1) {
+      signalType = Math.random() > 0.3 ? 'SELL' : 'BUY'; // Bias towards SELL on downtrend
+    } else {
+      signalType = Math.random() > 0.5 ? 'BUY' : 'SELL'; // Neutral
+    }
+    
+    // Generate more realistic conditions based on signal strength
+    const signalStrength = Math.random();
+    const strongSignal = signalStrength > 0.7;
+    const mediumSignal = signalStrength > 0.4;
+    
+    let demoConditions;
+    if (strongSignal) {
+      // Strong signal: 4-6 conditions met
+      demoConditions = {
+        rsi: Math.random() > 0.2,
+        stochastic: Math.random() > 0.2,
+        ema: Math.random() > 0.1,
+        macd: Math.random() > 0.3,
+        volume: Math.random() > 0.3,
+        fibonacci: Math.random() > 0.4
+      };
+    } else if (mediumSignal) {
+      // Medium signal: 3-4 conditions met
+      demoConditions = {
+        rsi: Math.random() > 0.4,
+        stochastic: Math.random() > 0.5,
+        ema: Math.random() > 0.4,
+        macd: Math.random() > 0.6,
+        volume: Math.random() > 0.5,
+        fibonacci: Math.random() > 0.6
+      };
+    } else {
+      // Weak signal: 1-3 conditions met
+      demoConditions = {
+        rsi: Math.random() > 0.7,
+        stochastic: Math.random() > 0.7,
+        ema: Math.random() > 0.6,
+        macd: Math.random() > 0.8,
+        volume: Math.random() > 0.7,
+        fibonacci: Math.random() > 0.8
+      };
+    }
     
     const score = Object.values(demoConditions).filter(Boolean).length;
+    
+    // Only generate signals with score >= 3
+    if (score < 3) return null;
     
     const signal = {
       type: signalType,
@@ -735,10 +859,11 @@ const ProfessionalTradingBot = () => {
       timeframe,
       conditions: demoConditions,
       score: score,
-      isDemo: true
+      isDemo: true,
+      strength: strongSignal ? 'STRONG' : mediumSignal ? 'MEDIUM' : 'WEAK'
     };
     
-    addLog(`🎲 DEMO Signal generated: ${signalType} dengan skor ${score}/6`);
+    addLog(`🎲 DEMO Signal generated: ${signalType} (${signal.strength}) dengan skor ${score}/6`);
     return signal;
   };
 
@@ -767,10 +892,10 @@ const ProfessionalTradingBot = () => {
         
         // Check if we should execute trade (limit concurrent trades)
         const openTrades = trades.filter(t => t.status === 'OPEN').length;
-        if (openTrades < 3) { // Max 3 concurrent demo trades
+        if (openTrades < 5) { // Max 5 concurrent demo trades (lebih aktif)
           await executeTrade(demoSignal);
         } else {
-          addLog("⚠️ Maksimal 3 trade aktif, skip eksekusi");
+          addLog("⚠️ Maksimal 5 trade aktif, skip eksekusi");
         }
       } else {
         addLog("📊 Tidak ada sinyal demo yang dihasilkan");
@@ -900,10 +1025,10 @@ const ProfessionalTradingBot = () => {
   // Setup bot interval
   useEffect(() => {
     if (botStatus === 'running') {
-      addLog("🚀 Memulai bot trading");
+      addLog("🚀 Memulai DEMO bot trading");
       runBotCycle(); // Jalankan segera
-      botIntervalRef.current = setInterval(runBotCycle, 30000); // Jalankan setiap 30 detik
-      addLog("⏱️ Interval bot diatur setiap 30 detik");
+      botIntervalRef.current = setInterval(runBotCycle, 25000); // Jalankan setiap 25 detik (lebih sering)
+      addLog("⏱️ DEMO bot interval diatur setiap 25 detik");
     } else {
       if (botIntervalRef.current) {
         clearInterval(botIntervalRef.current);
@@ -1095,16 +1220,28 @@ const ProfessionalTradingBot = () => {
     setSignals([]);
     setPerformanceStats(null);
     
+    // Reset simulator state
+    demoSimulator.tradeCount = 0;
+    demoSimulator.consecutiveLosses = 0;
+    demoSimulator.recentTrades = [];
+    demoSimulator.sessionStartTime = Date.now();
+    
     // Clear localStorage
     localStorage.removeItem(LOCAL_STORAGE_KEYS.DEMO_BALANCE);
     localStorage.removeItem(LOCAL_STORAGE_KEYS.DEMO_TRADES);
     localStorage.removeItem(LOCAL_STORAGE_KEYS.DEMO_PERFORMANCE);
+    localStorage.removeItem(LOCAL_STORAGE_KEYS.SIMULATOR_STATE);
+    localStorage.removeItem(LOCAL_STORAGE_KEYS.SESSION_DATA);
     
     // Clear any pending timeouts
     demoTradeTimeouts.current.forEach(timeoutId => clearTimeout(timeoutId));
     demoTradeTimeouts.current.clear();
     
+    // Save new session data
+    saveToLocalStorage(LOCAL_STORAGE_KEYS.SESSION_DATA, { startTime: Date.now() });
+    
     addLog("🔄 Demo data direset ke kondisi awal");
+    addLog("🆕 Sesi demo baru dimulai");
   };
 
   return (
@@ -1230,10 +1367,12 @@ const ProfessionalTradingBot = () => {
               <div className="mb-3 p-2 bg-orange-900 bg-opacity-30 border border-orange-700 rounded text-xs">
                 <div className="font-semibold text-orange-300 mb-1">🎯 Demo Trading Mode</div>
                 <div className="text-orange-200">
-                  • Win Rate: 10-11% (simulasi realistis)<br/>
+                  • Target Win Rate: 10-11% (simulasi realistis)<br/>
                   • Data chart: Real-time dari Binance<br/>
                   • Balance & trades: Simulasi dummy<br/>
-                  • Disimpan di local storage
+                  • Disimpan di local storage<br/>
+                  • Total trades: {demoSimulator.tradeCount}<br/>
+                  • Consecutive losses: {demoSimulator.consecutiveLosses}
                 </div>
               </div>
               
